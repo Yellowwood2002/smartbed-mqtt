@@ -3,7 +3,7 @@ import { Dictionary } from '@utils/Dictionary';
 import { BLEAdvertisement } from './BLEAdvertisement';
 import { BLEDeviceInfo } from './BLEDeviceInfo';
 import { IBLEDevice } from './IBLEDevice';
-import { logInfo } from '@utils/logger';
+import { logInfo, logWarn } from '@utils/logger';
 
 export class BLEDevice implements IBLEDevice {
   private connected = false;
@@ -56,8 +56,19 @@ export class BLEDevice implements IBLEDevice {
 
   getServices = async () => {
     if (!this.servicesList) {
-      const { servicesList } = await this.connection.listBluetoothGATTServicesService(this.address);
-      this.servicesList = servicesList;
+      try {
+        const { servicesList } = await this.connection.listBluetoothGATTServicesService(this.address);
+        this.servicesList = servicesList;
+      } catch (error: any) {
+        // Clear cache on error so we can retry
+        this.servicesList = undefined;
+        const errorMessage = error?.message || String(error);
+        if (errorMessage.includes('timeout') || errorMessage.includes('BluetoothGATTGetServicesDoneResponse')) {
+          logWarn(`[BLE] Timeout getting services for device ${this.name} (${this.mac}):`, errorMessage);
+          throw new Error(`BLE timeout: ${errorMessage}`);
+        }
+        throw error;
+      }
     }
     return this.servicesList;
   };
