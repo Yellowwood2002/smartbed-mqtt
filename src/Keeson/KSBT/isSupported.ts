@@ -1,4 +1,7 @@
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 
-export const isSupported = ({ name, advertisement: { serviceUuidsList } }: IBLEDevice) =>
-  name.startsWith('KSBT') && serviceUuidsList.includes('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
+export const isSupported = ({ name }: IBLEDevice) => {
+  // Trust the device name match for KSBT devices, even if advertisement data (manufacturerDataList, serviceUuidsList) is empty
+  // This avoids dropping devices when advertisement packets are incomplete
+  return name?.startsWith('KSBT') ?? false;
+};
