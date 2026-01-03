@@ -55,7 +55,9 @@ const connectToDevice = async (
     return true;
   } catch (error: any) {
     const errorMessage = error?.message || String(error);
-    const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+    const isTimeout = errorMessage.includes('timeout') || 
+                     errorMessage.includes('BluetoothGATTGetServicesDoneResponse') ||
+                     errorMessage.includes('BluetoothDeviceConnectionResponse');
     
     if (isTimeout) {
       logWarn(`[Keeson] BLE timeout for device ${name} (${mac}), will retry in ${RETRY_DELAY_MS / 1000}s:`, errorMessage);

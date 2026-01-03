@@ -1,6 +1,7 @@
 import { connectToMQTT } from '@mqtt/connectToMQTT';
 import { loadStrings } from '@utils/getString';
 import { logError, logWarn } from '@utils/logger';
+import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
 import { connectToESPHome } from 'ESPHome/connectToESPHome';
 import { ergomotion } from 'ErgoMotion/ergomotion';
@@ -32,8 +33,26 @@ process.on('exit', () => {
 process.on('SIGINT', () => processExit(0));
 process.on('SIGTERM', () => processExit(0));
 process.on('uncaughtException', (err) => {
-  logError(err);
-  processExit(2);
+  const errorMessage = err?.message || String(err);
+  const errorCode = (err as any)?.code || '';
+  const isSocketError = errorCode === 'ECONNRESET' || 
+                       errorCode === 'ECONNREFUSED' || 
+                       errorCode === 'ETIMEDOUT' ||
+                       errorMessage.includes('ECONNRESET') ||
+                       errorMessage.includes('socket') ||
+                       errorMessage.includes('reset') ||
+                       errorMessage.includes('timeout') ||
+                       errorMessage.includes('BluetoothDeviceConnectionResponse') ||
+                       errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+  
+  if (isSocketError) {
+    logWarn(`[Main] Uncaught socket/BLE error (will be handled by retry logic): ${errorCode || errorMessage}`, errorMessage);
+    // Don't exit - let the retry logic handle it
+    // The error will be caught by the retry mechanism in start()
+  } else {
+    logError('[Main] Uncaught exception:', err);
+    processExit(2);
+  }
 });
 
 const start = async () => {
@@ -52,29 +71,66 @@ const start = async () => {
     case 'ergomotion':
       return void (await ergomotion(mqtt));
   }
-  // bluetooth
-  const esphome = await connectToESPHome();
-  switch (getType()) {
-    case 'richmat':
-      return void (await richmat(mqtt, esphome));
-    case 'linak':
-      return void (await linak(mqtt, esphome));
-    case 'solace':
-      return void (await solace(mqtt, esphome));
-    case 'motosleep':
-      return void (await motosleep(mqtt, esphome));
-    case 'reverie':
-      return void (await reverie(mqtt, esphome));
-    case 'leggettplatt':
-      return void (await leggettplatt(mqtt, esphome));
-    case 'okimat':
-      return void (await okimat(mqtt, esphome));
-    case 'keeson':
-      return void (await keeson(mqtt, esphome));
-    case 'octo':
-      return void (await octo(mqtt, esphome));
-    case 'scanner':
-      return void (await scanner(esphome));
+  // bluetooth - wrap in retry loop to handle socket errors and connection failures
+  const RETRY_DELAY_MS = 5000; // 5 seconds
+  while (true) {
+    try {
+      const esphome = await connectToESPHome();
+      
+      switch (getType()) {
+        case 'richmat':
+          await richmat(mqtt, esphome);
+          return; // Success, exit retry loop
+        case 'linak':
+          await linak(mqtt, esphome);
+          return;
+        case 'solace':
+          await solace(mqtt, esphome);
+          return;
+        case 'motosleep':
+          await motosleep(mqtt, esphome);
+          return;
+        case 'reverie':
+          await reverie(mqtt, esphome);
+          return;
+        case 'leggettplatt':
+          await leggettplatt(mqtt, esphome);
+          return;
+        case 'okimat':
+          await okimat(mqtt, esphome);
+          return;
+        case 'keeson':
+          await keeson(mqtt, esphome);
+          return;
+        case 'octo':
+          await octo(mqtt, esphome);
+          return;
+        case 'scanner':
+          await scanner(esphome);
+          return;
+      }
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error);
+      const errorCode = error?.code || '';
+      const isSocketError = errorCode === 'ECONNRESET' || 
+                           errorCode === 'ECONNREFUSED' || 
+                           errorCode === 'ETIMEDOUT' ||
+                           errorMessage.includes('ECONNRESET') ||
+                           errorMessage.includes('socket') ||
+                           errorMessage.includes('reset') ||
+                           errorMessage.includes('timeout') ||
+                           errorMessage.includes('BluetoothDeviceConnectionResponse') ||
+                           errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+      
+      if (isSocketError) {
+        logWarn(`[Main] Socket/BLE error in ${getType()} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorCode || errorMessage);
+      } else {
+        logWarn(`[Main] Error in ${getType()} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
+      }
+      
+      await wait(RETRY_DELAY_MS);
+      // Loop will retry
+    }
   }
 };
 void start();
