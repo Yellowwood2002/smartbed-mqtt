@@ -4,7 +4,7 @@ import { wait } from '@utils/wait';
 import { ESPConnection } from './ESPConnection';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
-import { BLEProxy, getProxies } from './options';
+import { getProxies } from './options';
 
 const RETRY_DELAY_MS = 5000; // 5 seconds
 
