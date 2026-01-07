@@ -48,19 +48,8 @@ export class BLEDevice implements IBLEDevice {
     const existingDevice = deviceRegistry.get(this.deviceKey);
     if (existingDevice && existingDevice !== this) {
       // Explicitly clean up the old instance's listeners BEFORE creating new ones
+      // This removes the listener using .off() which is the proper way to remove it
       existingDevice.cleanup();
-      
-      // CRITICAL: Also remove ALL listeners for this event that might be from the old instance
-      // This is a safety measure in case cleanup() didn't catch all listeners
-      // We remove all listeners and re-add only ours to ensure no accumulation
-      const allListeners = this.connection.listeners('message.BluetoothDeviceConnectionResponse');
-      if (allListeners.length > 0) {
-        // Remove all existing listeners for this event
-        this.connection.removeAllListeners('message.BluetoothDeviceConnectionResponse');
-        // Re-add any listeners that weren't from BLEDevice (shouldn't be any, but safety first)
-        // Actually, we'll just add ours - if there were other legitimate listeners, they're gone
-        // This is acceptable because BLEDevice is the primary consumer of this event
-      }
     }
     
     // Register this instance
@@ -72,7 +61,11 @@ export class BLEDevice implements IBLEDevice {
       void this.connect();
     };
     
-    // Add our listener (we've already removed all old ones above if needed)
+    // Remove our specific listener if it exists (idempotent)
+    // This ensures we don't add duplicate listeners if constructor is called multiple times
+    this.connection.off('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
+    
+    // Add our listener
     this.connection.on('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
   }
   

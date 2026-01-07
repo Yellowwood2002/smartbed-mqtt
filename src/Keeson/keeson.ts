@@ -58,7 +58,7 @@ const connectToDevice = async (
     // Ensure cleanup on any error
     try {
       await disconnect();
-    } catch (disconnectError) {
+    } catch (_disconnectError) {
       // Ignore disconnect errors - device may already be disconnected
     }
     
