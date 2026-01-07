@@ -1,7 +1,7 @@
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { buildDictionary } from '@utils/buildDictionary';
 import { logError, logInfo, logWarn } from '@utils/logger';
-import { wait } from '@utils/wait';
+import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { setupDeviceInfoSensor } from 'BLE/setupDeviceInfoSensor';
 import { buildMQTTDeviceData } from 'Common/buildMQTTDeviceData';
 import { IESPConnection } from 'ESPHome/IESPConnection';
@@ -20,24 +20,24 @@ import { controllerBuilder as baseI4ControllerBuilder } from './BaseI4/controlle
 const checks = [isKSBTSupported, isBaseI5Supported, isBaseI4Supported];
 const controllerBuilders = [ksbtControllerBuilder, baseI5ControllerBuilder, baseI4ControllerBuilder];
 
-const RETRY_DELAY_MS = 5000; // 5 seconds
-
 const connectToDevice = async (
   mqtt: IMQTTConnection,
   bleDevice: IBLEDevice,
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
-): Promise<boolean> => {
+): Promise<void> => {
   const { name, mac, address, connect, disconnect, getDeviceInfo } = bleDevice;
   const deviceData = buildMQTTDeviceData({ ...device, address }, 'Keeson');
 
+  // CRITICAL: Use try/finally to ensure cleanup happens even on errors
   try {
     await connect();
 
     const controller = await controllerBuilder(deviceData, bleDevice);
     if (!controller) {
+      // Cleanup on failure
       await disconnect();
-      return false;
+      throw new Error(`Failed to build controller for device ${name}`);
     }
 
     logInfo('[Keeson] Setting up entities for device:', name);
@@ -52,62 +52,71 @@ const connectToDevice = async (
       logWarn(`[Keeson] Failed to get device info for ${name}, continuing anyway:`, error?.message || error);
     }
 
-    return true;
+    // Success - device is connected and set up
+    return;
   } catch (error: any) {
-    const errorMessage = error?.message || String(error);
-    const isTimeout = errorMessage.includes('timeout') || 
-                     errorMessage.includes('BluetoothGATTGetServicesDoneResponse') ||
-                     errorMessage.includes('BluetoothDeviceConnectionResponse');
-    
-    if (isTimeout) {
-      logWarn(`[Keeson] BLE timeout for device ${name} (${mac}), will retry in ${RETRY_DELAY_MS / 1000}s:`, errorMessage);
-    } else {
-      logWarn(`[Keeson] Connection error for device ${name} (${mac}), will retry in ${RETRY_DELAY_MS / 1000}s:`, errorMessage);
-    }
-
+    // Ensure cleanup on any error
     try {
       await disconnect();
     } catch (disconnectError) {
-      // Ignore disconnect errors
+      // Ignore disconnect errors - device may already be disconnected
     }
-
-    return false;
+    
+    // Re-throw the error so retry logic can handle it
+    throw error;
   }
 };
 
 const setupDeviceWithRetry = async (
   mqtt: IMQTTConnection,
   esphome: IESPConnection,
-  bleDevice: IBLEDevice,
+  initialBleDevice: IBLEDevice,
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
 ): Promise<void> => {
-  const { name, mac } = bleDevice;
+  const { name, mac } = initialBleDevice;
+  let bleDevice = initialBleDevice;
   
-  // Retry loop - runs forever until successful
-  while (true) {
-    const success = await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
-    
-    if (success) {
-      logInfo(`[Keeson] Successfully connected to device ${name} (${mac})`);
-      return; // Success, exit retry loop
-    }
-
-    // Wait before retrying
-    logInfo(`[Keeson] Waiting ${RETRY_DELAY_MS / 1000}s before retrying connection to ${name} (${mac})...`);
-    await wait(RETRY_DELAY_MS);
-    
-    // Re-fetch the device in case it was lost
-    try {
-      const refreshedDevices = await esphome.getBLEDevices([device.name.toLowerCase()]);
-      if (refreshedDevices.length > 0) {
-        // Update the bleDevice reference if we got a fresh one
-        Object.assign(bleDevice, refreshedDevices[0]);
+  // Use retryWithBackoff for centralized retry logic
+  // Infinite retries (maxRetries = undefined) for persistent connection attempts
+  await retryWithBackoff(
+    async () => {
+      // CRITICAL: Clean up any old device instances before attempting connection
+      // This prevents listener accumulation
+      try {
+        // Try to refresh device list, but don't fail if it doesn't work
+        const refreshedDevices = await esphome.getBLEDevices([device.name.toLowerCase()]);
+        if (refreshedDevices.length > 0) {
+          // If we got a fresh device, the old one will be cleaned up by the registry
+          // in the BLEDevice constructor, so we can safely use the new one
+          bleDevice = refreshedDevices[0];
+        }
+      } catch (error) {
+        // If refresh fails, continue with existing device
+        // The cleanup in connectToDevice's finally block will handle disconnection
       }
-    } catch (error) {
-      // Ignore errors refreshing device list, will retry with existing device
+      
+      // Attempt connection - this will throw on failure, triggering retry
+      await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
+      
+      // Success - log and return
+      logInfo(`[Keeson] Successfully connected to device ${name} (${mac})`);
+    },
+    {
+      maxRetries: undefined, // Infinite retries
+      initialDelayMs: 5000, // 5 seconds initial delay
+      maxDelayMs: 30000, // Max 30 seconds between retries
+      backoffMultiplier: 1.5, // Gradual backoff
+      isRetryableError: isSocketOrBLETimeoutError,
+      onRetry: (error: any, attempt: number, delayMs: number) => {
+        const errorMessage = error?.message || String(error);
+        logWarn(
+          `[Keeson] Connection attempt ${attempt} failed for device ${name} (${mac}), retrying in ${delayMs / 1000}s:`,
+          errorMessage
+        );
+      },
     }
-  }
+  );
 };
 
 export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Promise<void> => {

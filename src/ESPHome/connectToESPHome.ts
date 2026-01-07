@@ -1,12 +1,10 @@
 import { Connection } from '@2colors/esphome-native-api';
-import { logInfo, logWarn } from '@utils/logger';
-import { wait } from '@utils/wait';
+import { logInfo } from '@utils/logger';
+import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { ESPConnection } from './ESPConnection';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
 import { getProxies } from './options';
-
-const RETRY_DELAY_MS = 5000; // 5 seconds
 
 export const connectToESPHome = async (): Promise<IESPConnection> => {
   logInfo('[ESPHome] Connecting...');
@@ -16,38 +14,36 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
     return new ESPConnection([]);
   }
 
-  // Retry loop for each proxy connection
+  // Use retryWithBackoff for each proxy connection
   const connections: Connection[] = [];
   
   for (const config of proxies) {
-    let connected = false;
-    while (!connected) {
-      try {
-        const connection = new Connection(config);
-        const connectedConnection = await connect(connection);
-        connections.push(connectedConnection);
-        connected = true;
-      } catch (error: any) {
-        const errorMessage = error?.message || String(error);
-        const errorCode = error?.code || '';
-        const isSocketError = errorCode === 'ECONNRESET' || 
-                             errorCode === 'ECONNREFUSED' || 
-                             errorCode === 'ETIMEDOUT' ||
-                             errorMessage.includes('ECONNRESET') ||
-                             errorMessage.includes('socket') ||
-                             errorMessage.includes('reset') ||
-                             errorMessage.includes('timeout');
-        
-        if (isSocketError) {
-          logWarn(`[ESPHome] Socket error connecting to ${config.host}:${config.port || 6053} (${errorCode || errorMessage}), retrying in ${RETRY_DELAY_MS / 1000}s...`);
-        } else {
-          logWarn(`[ESPHome] Connection error to ${config.host}:${config.port || 6053}, retrying in ${RETRY_DELAY_MS / 1000}s:`, errorMessage);
-        }
-        
-        await wait(RETRY_DELAY_MS);
-        // Loop will retry
+    // CRITICAL: Use retryWithBackoff with infinite retries for each proxy
+    // This ensures we keep trying to connect even after socket errors
+    const connection = await retryWithBackoff(
+      async () => {
+        const newConnection = new Connection(config);
+        // connect() will throw on failure, triggering retry
+        return await connect(newConnection);
+      },
+      {
+        maxRetries: undefined, // Infinite retries
+        initialDelayMs: 5000, // 5 seconds initial delay
+        maxDelayMs: 30000, // Max 30 seconds between retries
+        backoffMultiplier: 1.5, // Gradual backoff
+        isRetryableError: isSocketOrBLETimeoutError,
+        onRetry: (error: any, attempt: number, delayMs: number) => {
+          const errorMessage = error?.message || String(error);
+          const errorCode = error?.code || '';
+          logInfo(
+            `[ESPHome] Connection attempt ${attempt} to ${config.host}:${config.port || 6053} failed, retrying in ${delayMs / 1000}s:`,
+            errorCode || errorMessage
+          );
+        },
       }
-    }
+    );
+    
+    connections.push(connection);
   }
   
   return new ESPConnection(connections);

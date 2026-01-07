@@ -5,6 +5,15 @@ import { BLEDeviceInfo } from './BLEDeviceInfo';
 import { IBLEDevice } from './IBLEDevice';
 import { logInfo, logWarn } from '@utils/logger';
 
+// Static registry to track active BLEDevice instances by address+connection
+// This allows us to clean up old listeners when new instances are created
+type DeviceKey = string;
+const deviceRegistry = new Map<DeviceKey, BLEDevice>();
+
+function getDeviceKey(connection: Connection, address: number): DeviceKey {
+  return `${connection.host || 'unknown'}:${address}`;
+}
+
 export class BLEDevice implements IBLEDevice {
   private connected = false;
   private paired = false;
@@ -13,6 +22,11 @@ export class BLEDevice implements IBLEDevice {
   private serviceCache: Dictionary<BluetoothGATTService | null> = {};
 
   private deviceInfo?: BLEDeviceInfo;
+  
+  // Store listener reference for cleanup
+  private connectionResponseListener?: (data: { address: number; connected: boolean }) => void;
+  private notifyDataListeners: Map<number, (message: any) => void> = new Map();
+  private deviceKey: DeviceKey;
 
   public mac: string;
   public get address() {
@@ -27,10 +41,51 @@ export class BLEDevice implements IBLEDevice {
 
   constructor(public name: string, public advertisement: BLEAdvertisement, private connection: Connection) {
     this.mac = this.address.toString(16).padStart(12, '0');
-    this.connection.on('message.BluetoothDeviceConnectionResponse', ({ address, connected }) => {
+    this.deviceKey = getDeviceKey(connection, this.address);
+    
+    // CRITICAL: Clean up any existing BLEDevice instance for this address+connection
+    // This prevents listener accumulation during retries
+    const existingDevice = deviceRegistry.get(this.deviceKey);
+    if (existingDevice && existingDevice !== this) {
+      // Explicitly clean up the old instance's listeners BEFORE creating new ones
+      existingDevice.cleanup();
+    }
+    
+    // Register this instance
+    deviceRegistry.set(this.deviceKey, this);
+    
+    // Store listener reference so we can remove it later
+    this.connectionResponseListener = ({ address, connected }) => {
       if (this.address !== address || this.connected === connected) return;
       void this.connect();
-    });
+    };
+    
+    // Remove our specific listener if it exists (idempotent)
+    // This ensures we don't add duplicate listeners if constructor is called multiple times
+    this.connection.off('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
+    
+    // Add our listener
+    this.connection.on('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
+  }
+  
+  // Cleanup method to remove all listeners
+  cleanup(): void {
+    if (this.connectionResponseListener) {
+      this.connection.off('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
+      this.connectionResponseListener = undefined;
+    }
+    
+    // Remove all notify data listeners
+    for (const [handle, listener] of this.notifyDataListeners.entries()) {
+      this.connection.off('message.BluetoothGATTNotifyDataResponse', listener);
+    }
+    this.notifyDataListeners.clear();
+    
+    // Remove from registry
+    const registered = deviceRegistry.get(this.deviceKey);
+    if (registered === this) {
+      deviceRegistry.delete(this.deviceKey);
+    }
   }
 
   pair = async () => {
@@ -91,10 +146,20 @@ export class BLEDevice implements IBLEDevice {
   };
 
   subscribeToCharacteristic = async (handle: number, notify: (data: Uint8Array) => void) => {
-    this.connection.on('message.BluetoothGATTNotifyDataResponse', (message) => {
+    // Remove existing listener for this handle if it exists
+    const existingListener = this.notifyDataListeners.get(handle);
+    if (existingListener) {
+      this.connection.off('message.BluetoothGATTNotifyDataResponse', existingListener);
+    }
+    
+    // Create and store new listener
+    const listener = (message: any) => {
       if (message.address != this.address || message.handle != handle) return;
       notify(new Uint8Array([...Buffer.from(message.data, 'base64')]));
-    });
+    };
+    this.notifyDataListeners.set(handle, listener);
+    
+    this.connection.on('message.BluetoothGATTNotifyDataResponse', listener);
     await this.connection.notifyBluetoothGATTCharacteristicService(this.address, handle);
   };
 
