@@ -69,32 +69,21 @@ const connectToDevice = async (
 
 const setupDeviceWithRetry = async (
   mqtt: IMQTTConnection,
-  esphome: IESPConnection,
+  _esphome: IESPConnection,
   initialBleDevice: IBLEDevice,
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
 ): Promise<void> => {
   const { name, mac } = initialBleDevice;
-  let bleDevice = initialBleDevice;
+  const bleDevice = initialBleDevice;
   
   // Use retryWithBackoff for centralized retry logic
   // Infinite retries (maxRetries = undefined) for persistent connection attempts
   await retryWithBackoff(
     async () => {
-      // CRITICAL: Clean up any old device instances before attempting connection
-      // This prevents listener accumulation
-      try {
-        // Try to refresh device list, but don't fail if it doesn't work
-        const refreshedDevices = await esphome.getBLEDevices([device.name.toLowerCase()]);
-        if (refreshedDevices.length > 0) {
-          // If we got a fresh device, the old one will be cleaned up by the registry
-          // in the BLEDevice constructor, so we can safely use the new one
-          bleDevice = refreshedDevices[0];
-        }
-      } catch (error) {
-        // If refresh fails, continue with existing device
-        // The cleanup in connectToDevice's finally block will handle disconnection
-      }
+      // CRITICAL: Reuse the same device instance - don't refresh unnecessarily
+      // Refreshing creates new BLEDevice instances which adds more listeners
+      // The existing device instance can be reused for retries
       
       // Attempt connection - this will throw on failure, triggering retry
       await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
