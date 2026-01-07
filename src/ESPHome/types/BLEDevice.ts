@@ -76,7 +76,7 @@ export class BLEDevice implements IBLEDevice {
     }
     
     // Remove all notify data listeners
-    for (const [handle, listener] of this.notifyDataListeners.entries()) {
+    for (const [_handle, listener] of this.notifyDataListeners.entries()) {
       this.connection.off('message.BluetoothGATTNotifyDataResponse', listener);
     }
     this.notifyDataListeners.clear();

@@ -26,7 +26,7 @@ const connectToDevice = async (
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
 ): Promise<void> => {
-  const { name, mac, address, connect, disconnect, getDeviceInfo } = bleDevice;
+  const { name, mac: _mac, address, connect, disconnect, getDeviceInfo } = bleDevice;
   const deviceData = buildMQTTDeviceData({ ...device, address }, 'Keeson');
 
   // CRITICAL: Use try/finally to ensure cleanup happens even on errors
