@@ -5,6 +5,7 @@ import { ESPConnection } from './ESPConnection';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
 import { getProxies } from './options';
+import EventEmitter from 'events';
 
 export const connectToESPHome = async (): Promise<IESPConnection> => {
   logInfo('[ESPHome] Connecting...');
@@ -28,7 +29,8 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
         // This prevents orphan listeners from accumulating on dead socket objects
         if (failedConnection) {
           try {
-            failedConnection.removeAllListeners();
+            // Connection extends EventEmitter internally, so we can cast and call removeAllListeners
+            (failedConnection as unknown as EventEmitter).removeAllListeners();
           } catch (e) {
             // Ignore errors during cleanup
           }
