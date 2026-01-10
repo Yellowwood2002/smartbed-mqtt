@@ -3,6 +3,7 @@ import { getRootOptions } from '@utils/options';
 export interface KeesonDevice {
   friendlyName: string;
   name: string;
+  stayConnected?: boolean;
 }
 
 interface OptionsJson {

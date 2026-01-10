@@ -24,19 +24,22 @@ const connectToDevice = async (
   mqtt: IMQTTConnection,
   bleDevice: IBLEDevice,
   device: any,
-  controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
+  controllerBuilder: (deviceData: any, bleDevice: IBLEDevice, stayConnected?: boolean) => Promise<any>
 ): Promise<void> => {
   const { name, mac: _mac, address, connect, disconnect, getDeviceInfo } = bleDevice;
   const deviceData = buildMQTTDeviceData({ ...device, address }, 'Keeson');
+  const stayConnected = device.stayConnected ?? false;
 
   // CRITICAL: Use try/finally to ensure cleanup happens even on errors
   try {
     await connect();
 
-    const controller = await controllerBuilder(deviceData, bleDevice);
+    const controller = await controllerBuilder(deviceData, bleDevice, stayConnected);
     if (!controller) {
-      // Cleanup on failure
-      await disconnect();
+      // Cleanup on failure - only disconnect if not staying connected
+      if (!stayConnected) {
+        await disconnect();
+      }
       throw new Error(`Failed to build controller for device ${name}`);
     }
 
@@ -52,14 +55,21 @@ const connectToDevice = async (
       logWarn(`[Keeson] Failed to get device info for ${name}, continuing anyway:`, error?.message || error);
     }
 
+    // Respect stayConnected flag - don't disconnect if it's true
+    if (!stayConnected) {
+      await disconnect();
+    }
+
     // Success - device is connected and set up
     return;
   } catch (error: any) {
-    // Ensure cleanup on any error
-    try {
-      await disconnect();
-    } catch (_disconnectError) {
-      // Ignore disconnect errors - device may already be disconnected
+    // Ensure cleanup on any error - only disconnect if not staying connected
+    if (!stayConnected) {
+      try {
+        await disconnect();
+      } catch (_disconnectError) {
+        // Ignore disconnect errors - device may already be disconnected
+      }
     }
     
     // Re-throw the error so retry logic can handle it

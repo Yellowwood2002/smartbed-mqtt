@@ -23,10 +23,13 @@ export class BLEDevice implements IBLEDevice {
 
   private deviceInfo?: BLEDeviceInfo;
   
-  // Store listener reference for cleanup
-  private connectionResponseListener?: (data: { address: number; connected: boolean }) => void;
+  // Store listener reference for cleanup - use bound method for stable reference
+  private connectionResponseListener: (data: { address: number; connected: boolean }) => void;
   private notifyDataListeners: Map<number, (message: any) => void> = new Map();
   private deviceKey: DeviceKey;
+  
+  // Connection mutex to prevent simultaneous connection attempts
+  private connectingPromise: Promise<void> | null = null;
 
   public mac: string;
   public get address() {
@@ -55,11 +58,8 @@ export class BLEDevice implements IBLEDevice {
     // Register this instance
     deviceRegistry.set(this.deviceKey, this);
     
-    // Store listener reference so we can remove it later
-    this.connectionResponseListener = ({ address, connected }) => {
-      if (this.address !== address || this.connected === connected) return;
-      void this.connect();
-    };
+    // Use bound method for stable reference - this ensures .off() can successfully remove it
+    this.connectionResponseListener = this.handleConnectionResponse.bind(this);
     
     // Remove our specific listener if it exists (idempotent)
     // This ensures we don't add duplicate listeners if constructor is called multiple times
@@ -69,11 +69,16 @@ export class BLEDevice implements IBLEDevice {
     this.connection.on('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
   }
   
+  // Bound method handler for connection responses - stable reference for listener management
+  private handleConnectionResponse = (data: { address: number; connected: boolean }) => {
+    if (this.address !== data.address || this.connected === data.connected) return;
+    void this.connect();
+  };
+  
   // Cleanup method to remove all listeners
   cleanup(): void {
     if (this.connectionResponseListener) {
       this.connection.off('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
-      this.connectionResponseListener = undefined;
     }
     
     // Remove all notify data listeners
@@ -95,10 +100,25 @@ export class BLEDevice implements IBLEDevice {
   };
 
   connect = async () => {
-    const { addressType } = this.advertisement;
-    await this.connection.connectBluetoothDeviceService(this.address, addressType);
-    this.connected = true;
-    if (this.paired) await this.pair();
+    // Connection mutex: if already connecting, return the existing promise
+    if (this.connectingPromise) {
+      return this.connectingPromise;
+    }
+    
+    // Create new connection promise
+    this.connectingPromise = (async () => {
+      try {
+        const { addressType } = this.advertisement;
+        await this.connection.connectBluetoothDeviceService(this.address, addressType);
+        this.connected = true;
+        if (this.paired) await this.pair();
+      } finally {
+        // Clear the promise once connection succeeds or fails
+        this.connectingPromise = null;
+      }
+    })();
+    
+    return this.connectingPromise;
   };
 
   disconnect = async () => {

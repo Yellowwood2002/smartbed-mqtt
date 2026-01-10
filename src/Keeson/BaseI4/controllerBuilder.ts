@@ -12,7 +12,7 @@ const buildCommand = (command: number) => {
   return data.map(byte);
 };
 
-export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLEDevice) => {
+export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLEDevice, stayConnected?: boolean) => {
   const { getCharacteristic } = bleDevice;
 
   const writeCharacteristic = await getCharacteristic(
@@ -21,5 +21,5 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
   );
   if (!writeCharacteristic) return undefined;
 
-  return new BLEController(deviceData, bleDevice, writeCharacteristic.handle, buildCommand);
+  return new BLEController(deviceData, bleDevice, writeCharacteristic.handle, buildCommand, {}, stayConnected);
 };

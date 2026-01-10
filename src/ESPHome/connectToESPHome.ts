@@ -18,13 +18,32 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
   const connections: Connection[] = [];
   
   for (const config of proxies) {
+    let failedConnection: Connection | null = null;
+    
     // CRITICAL: Use retryWithBackoff with infinite retries for each proxy
     // This ensures we keep trying to connect even after socket errors
     const connection = await retryWithBackoff(
       async () => {
+        // Clean up previous failed connection before creating a new one
+        // This prevents orphan listeners from accumulating on dead socket objects
+        if (failedConnection) {
+          try {
+            failedConnection.removeAllListeners();
+          } catch (e) {
+            // Ignore errors during cleanup
+          }
+          failedConnection = null;
+        }
+        
         const newConnection = new Connection(config);
-        // connect() will throw on failure, triggering retry
-        return await connect(newConnection);
+        try {
+          // connect() will throw on failure, triggering retry
+          return await connect(newConnection);
+        } catch (error) {
+          // Store failed connection for cleanup on next attempt
+          failedConnection = newConnection;
+          throw error;
+        }
       },
       {
         maxRetries: undefined, // Infinite retries
