@@ -55,57 +55,148 @@ process.on('uncaughtException', (err) => {
   }
 });
 
+process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+  const errorMessage = reason?.message || String(reason);
+  const errorCode = reason?.code || '';
+  const isSocketError = errorCode === 'ECONNRESET' || 
+                       errorCode === 'ECONNREFUSED' || 
+                       errorCode === 'ETIMEDOUT' ||
+                       errorMessage.includes('ECONNRESET') ||
+                       errorMessage.includes('socket') ||
+                       errorMessage.includes('reset') ||
+                       errorMessage.includes('timeout') ||
+                       errorMessage.includes('BluetoothDeviceConnectionResponse') ||
+                       errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+  
+  if (isSocketError) {
+    logWarn(`[Main] Unhandled promise rejection (socket/BLE error, will be handled by retry logic): ${errorCode || errorMessage}`, errorMessage);
+    // Don't exit - let the retry logic handle it
+  } else {
+    logError('[Main] Unhandled promise rejection:', reason);
+    // For non-socket errors, log but don't exit - let the monitoring loop handle recovery
+  }
+});
+
+// Self-healing wrapper for device functions that monitors and restarts on failure
+// BLE device functions like keeson() use Promise.all() which completes when all devices are set up.
+// If connections fail later (MQTT disconnect, ESPHome failure, etc.), we need to restart the entire setup.
+// This wrapper ensures that if the device function throws an error (e.g., from a failed command),
+// we restart the setup with fresh connections.
+const runWithSelfHealing = async (
+  deviceFunction: (mqtt: any, esphome: any) => Promise<void>,
+  mqtt: any,
+  esphome: any
+): Promise<void> => {
+  const RETRY_DELAY_MS = 10000; // 10 seconds between recovery attempts
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 5;
+  
+  while (true) {
+    try {
+      // Reset failure counter on success
+      consecutiveFailures = 0;
+      
+      // Run the device function - for BLE devices, this sets up all devices and completes
+      // The device setup functions use infinite retries internally, so they should run forever
+      // If they complete, it means all devices were set up successfully
+      await deviceFunction(mqtt, esphome);
+      
+      // If we get here, the function completed (shouldn't happen for BLE devices with retry logic)
+      // This means something went wrong - restart the setup
+      logWarn(`[Main] Device function ${getType()} completed unexpectedly, restarting setup...`);
+      throw new Error('Device function completed unexpectedly - restarting setup');
+    } catch (error: any) {
+      consecutiveFailures++;
+      const errorMessage = error?.message || String(error);
+      const errorCode = error?.code || '';
+      const isSocketError = errorCode === 'ECONNRESET' || 
+                           errorCode === 'ECONNREFUSED' || 
+                           errorCode === 'ETIMEDOUT' ||
+                           errorMessage.includes('ECONNRESET') ||
+                           errorMessage.includes('socket') ||
+                           errorMessage.includes('reset') ||
+                           errorMessage.includes('timeout') ||
+                           errorMessage.includes('BluetoothDeviceConnectionResponse') ||
+                           errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+      
+      if (isSocketError) {
+        logWarn(`[Main] Socket/BLE error in ${getType()} (failure ${consecutiveFailures}, will retry in ${RETRY_DELAY_MS / 1000}s):`, errorCode || errorMessage);
+      } else {
+        logWarn(`[Main] Error in ${getType()} (failure ${consecutiveFailures}, will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
+      }
+      
+      // If we have too many consecutive failures, wait longer before retrying
+      const delay = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES 
+        ? RETRY_DELAY_MS * 3  // 30 seconds for persistent failures
+        : RETRY_DELAY_MS;
+      
+      await wait(delay);
+      // Re-throw to trigger outer loop to reconnect MQTT/ESPHome
+      throw error;
+    }
+  }
+};
+
 const start = async () => {
   await loadStrings();
 
-  const mqtt = await connectToMQTT();
-
-  // http/udp
-  switch (getType()) {
+  // http/udp devices - these complete and exit, so no self-healing needed
+  const type = getType();
+  switch (type) {
     case 'sleeptracker':
-      return void (await sleeptracker(mqtt));
+      return void (await sleeptracker(await connectToMQTT()));
     case 'ergowifi':
-      return void (await ergowifi(mqtt));
+      return void (await ergowifi(await connectToMQTT()));
     case 'logicdata':
-      return void (await logicdata(mqtt));
+      return void (await logicdata(await connectToMQTT()));
     case 'ergomotion':
-      return void (await ergomotion(mqtt));
+      return void (await ergomotion(await connectToMQTT()));
   }
-  // bluetooth - wrap in retry loop to handle socket errors and connection failures
+  
+  // bluetooth devices - these need self-healing with connection monitoring
   const RETRY_DELAY_MS = 5000; // 5 seconds
   while (true) {
+    let mqtt: any = null;
+    let esphome: any = null;
+    
     try {
-      const esphome = await connectToESPHome();
+      // Reconnect MQTT if needed (self-healing)
+      mqtt = await connectToMQTT();
       
-      switch (getType()) {
+      // Reconnect ESPHome if needed (self-healing)
+      esphome = await connectToESPHome();
+      
+      // Run device function with self-healing wrapper
+      switch (type) {
         case 'richmat':
-          await richmat(mqtt, esphome);
-          return; // Success, exit retry loop
+          await runWithSelfHealing(richmat, mqtt, esphome);
+          return; // Should not reach here, but safety exit
         case 'linak':
-          await linak(mqtt, esphome);
+          await runWithSelfHealing(linak, mqtt, esphome);
           return;
         case 'solace':
-          await solace(mqtt, esphome);
+          await runWithSelfHealing(solace, mqtt, esphome);
           return;
         case 'motosleep':
-          await motosleep(mqtt, esphome);
+          await runWithSelfHealing(motosleep, mqtt, esphome);
           return;
         case 'reverie':
-          await reverie(mqtt, esphome);
+          await runWithSelfHealing(reverie, mqtt, esphome);
           return;
         case 'leggettplatt':
-          await leggettplatt(mqtt, esphome);
+          await runWithSelfHealing(leggettplatt, mqtt, esphome);
           return;
         case 'okimat':
-          await okimat(mqtt, esphome);
+          await runWithSelfHealing(okimat, mqtt, esphome);
           return;
         case 'keeson':
-          await keeson(mqtt, esphome);
+          await runWithSelfHealing(keeson, mqtt, esphome);
           return;
         case 'octo':
-          await octo(mqtt, esphome);
+          await runWithSelfHealing(octo, mqtt, esphome);
           return;
         case 'scanner':
+          // Scanner doesn't need self-healing - it's a one-time scan operation
           await scanner(esphome);
           return;
       }
@@ -123,9 +214,9 @@ const start = async () => {
                            errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
       
       if (isSocketError) {
-        logWarn(`[Main] Socket/BLE error in ${getType()} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorCode || errorMessage);
+        logWarn(`[Main] Socket/BLE error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorCode || errorMessage);
       } else {
-        logWarn(`[Main] Error in ${getType()} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
+        logWarn(`[Main] Error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
       }
       
       await wait(RETRY_DELAY_MS);

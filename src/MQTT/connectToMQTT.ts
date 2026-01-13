@@ -10,7 +10,12 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
   // Try connecting with the configured host first
   const tryConnect = (config: typeof MQTTConfig): Promise<IMQTTConnection> => {
     return new Promise((resolve, reject) => {
-      const client = mqtt.connect(config);
+      // Configure MQTT client with auto-reconnect enabled
+      const client = mqtt.connect({
+        ...config,
+        reconnectPeriod: 5000, // Reconnect every 5 seconds
+        connectTimeout: 30000, // 30 second connection timeout
+      } as any); // Type assertion needed because config may have string port/username/password from env
       
       const cleanup = () => {
         client.removeAllListeners();
@@ -19,6 +24,21 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
       client.once('connect', () => {
         cleanup();
         logInfo('[MQTT] Connected');
+        
+        // Set up reconnection monitoring
+        client.on('close', () => {
+          logWarn('[MQTT] Connection closed, will attempt to reconnect...');
+        });
+        
+        client.on('offline', () => {
+          logWarn('[MQTT] Client went offline, will attempt to reconnect...');
+        });
+        
+        client.on('error', (error: any) => {
+          const errorMessage = error?.message || String(error);
+          logError('[MQTT] Connection error (client will attempt to reconnect):', errorMessage);
+        });
+        
         resolve(new MQTTConnection(client));
       });
       
