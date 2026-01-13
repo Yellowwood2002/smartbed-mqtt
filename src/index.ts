@@ -55,7 +55,7 @@ process.on('uncaughtException', (err) => {
   }
 });
 
-process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+process.on('unhandledRejection', (reason: any, _promise: Promise<any>) => {
   const errorMessage = reason?.message || String(reason);
   const errorCode = reason?.code || '';
   const isSocketError = errorCode === 'ECONNRESET' || 
