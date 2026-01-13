@@ -1,6 +1,6 @@
 import { connectToMQTT } from '@mqtt/connectToMQTT';
 import { loadStrings } from '@utils/getString';
-import { logError, logWarn } from '@utils/logger';
+import { logError, logInfo, logWarn } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
 import { connectToESPHome } from 'ESPHome/connectToESPHome';

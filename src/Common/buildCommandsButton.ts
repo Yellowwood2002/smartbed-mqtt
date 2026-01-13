@@ -18,9 +18,9 @@ export const buildCommandsButton = <TCommand>(
   cache[name] = new Button(mqtt, deviceData, buildEntityConfig(name, category), async () => {
     try {
       await writeCommands(commands);
-      logInfo(`[${context}] Successfully executed command '${getString(name)}' on device ${deviceData.friendlyName}`);
+      logInfo(`[${context}] Successfully executed command '${getString(name)}' on device ${deviceData.device.name}`);
     } catch (e) {
-      logError(`[${context}] Failed to write '${getString(name)}' on device ${deviceData.friendlyName}`, e);
+      logError(`[${context}] Failed to write '${getString(name)}' on device ${deviceData.device.name}`, e);
     }
   }).setOnline();
 };

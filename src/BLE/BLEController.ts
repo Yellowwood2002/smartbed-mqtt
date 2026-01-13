@@ -42,13 +42,13 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
   private disconnect = async () => {
     try {
       await this.bleDevice.disconnect();
-      logInfo(`[BLE] Successfully disconnected from device ${this.deviceData.friendlyName}`);
+      logInfo(`[BLE] Successfully disconnected from device ${this.deviceData.device.name}`);
     } catch (error: any) {
       // Don't log as error - disconnect failures are often harmless (device already disconnected)
       // Only log if it's not a "Not connected" error
       const errorMessage = error?.message || String(error);
       if (!errorMessage.includes('Not connected') && !errorMessage.includes('not connected')) {
-        logError(`[BLE] Error disconnecting from device ${this.deviceData.friendlyName}:`, errorMessage);
+        logError(`[BLE] Error disconnecting from device ${this.deviceData.device.name}:`, errorMessage);
       }
     }
   };
@@ -60,9 +60,9 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     }
     try {
       await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
-      logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.friendlyName}`);
+      logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name}`);
     } catch (e) {
-      logError(`[BLE] Failed to write characteristic to device ${this.deviceData.friendlyName}`, e);
+      logError(`[BLE] Failed to write characteristic to device ${this.deviceData.device.name}`, e);
       throw e; // Re-throw so callers know the write failed
     }
     if (this.stayConnected) return;
@@ -79,9 +79,9 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
 
     try {
       await this.bleDevice.connect();
-      logInfo(`[BLE] Successfully connected to device ${this.deviceData.friendlyName} for command execution`);
+      logInfo(`[BLE] Successfully connected to device ${this.deviceData.device.name} for command execution`);
     } catch (error: any) {
-      logError(`[BLE] Failed to connect to device ${this.deviceData.friendlyName}`, error);
+      logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
       throw error;
     }
 
