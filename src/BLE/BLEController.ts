@@ -8,7 +8,7 @@ import { IController } from '../Common/IController';
 import { IEventSource } from '../Common/IEventSource';
 import { arrayEquals } from '@utils/arrayEquals';
 import { deepArrayEquals } from '@utils/deepArrayEquals';
-import { logError } from '@utils/logger';
+import { logError, logInfo } from '@utils/logger';
 
 export class BLEController<TCommand> extends EventEmitter implements IEventSource, IController<TCommand> {
   cache: Dictionary<Object> = {};
@@ -39,7 +39,19 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     });
   }
 
-  private disconnect = () => this.bleDevice.disconnect();
+  private disconnect = async () => {
+    try {
+      await this.bleDevice.disconnect();
+      logInfo(`[BLE] Successfully disconnected from device ${this.deviceData.friendlyName}`);
+    } catch (error: any) {
+      // Don't log as error - disconnect failures are often harmless (device already disconnected)
+      // Only log if it's not a "Not connected" error
+      const errorMessage = error?.message || String(error);
+      if (!errorMessage.includes('Not connected') && !errorMessage.includes('not connected')) {
+        logError(`[BLE] Error disconnecting from device ${this.deviceData.friendlyName}:`, errorMessage);
+      }
+    }
+  };
 
   private write = async (command: number[]) => {
     if (this.disconnectTimeout) {
@@ -48,8 +60,10 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     }
     try {
       await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
+      logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.friendlyName}`);
     } catch (e) {
-      logError(`[BLE] Failed to write characteristic`, e);
+      logError(`[BLE] Failed to write characteristic to device ${this.deviceData.friendlyName}`, e);
+      throw e; // Re-throw so callers know the write failed
     }
     if (this.stayConnected) return;
 
@@ -63,7 +77,13 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     const commandList = commands.map(this.commandBuilder).filter((command) => command.length > 0);
     if (commandList.length === 0) return;
 
-    await this.bleDevice.connect();
+    try {
+      await this.bleDevice.connect();
+      logInfo(`[BLE] Successfully connected to device ${this.deviceData.friendlyName} for command execution`);
+    } catch (error: any) {
+      logError(`[BLE] Failed to connect to device ${this.deviceData.friendlyName}`, error);
+      throw error;
+    }
 
     const onTick =
       commandList.length === 1 ? () => this.write(commandList[0]) : () => loopWithWait(commandList, this.write);

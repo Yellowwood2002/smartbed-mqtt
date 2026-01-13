@@ -111,7 +111,11 @@ export class BLEDevice implements IBLEDevice {
         const { addressType } = this.advertisement;
         await this.connection.connectBluetoothDeviceService(this.address, addressType);
         this.connected = true;
+        logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac})`);
         if (this.paired) await this.pair();
+      } catch (error: any) {
+        logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, error?.message || String(error));
+        throw error;
       } finally {
         // Clear the promise once connection succeeds or fails
         this.connectingPromise = null;
@@ -123,7 +127,17 @@ export class BLEDevice implements IBLEDevice {
 
   disconnect = async () => {
     this.connected = false;
-    await this.connection.disconnectBluetoothDeviceService(this.address);
+    try {
+      await this.connection.disconnectBluetoothDeviceService(this.address);
+      logInfo(`[BLE] Successfully disconnected device ${this.name} (${this.mac})`);
+    } catch (error: any) {
+      // Don't log as error - disconnect failures are often harmless (device already disconnected)
+      const errorMessage = error?.message || String(error);
+      if (!errorMessage.includes('Not connected') && !errorMessage.includes('not connected')) {
+        logWarn(`[BLE] Error disconnecting device ${this.name} (${this.mac}):`, errorMessage);
+      }
+      // Don't re-throw - disconnect failures shouldn't crash the process
+    }
   };
 
   writeCharacteristic = async (handle: number, bytes: Uint8Array, response = true) => {

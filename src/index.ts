@@ -79,9 +79,9 @@ process.on('unhandledRejection', (reason: any, _promise: Promise<any>) => {
 
 // Self-healing wrapper for device functions that monitors and restarts on failure
 // BLE device functions like keeson() use Promise.all() which completes when all devices are set up.
+// This is NORMAL behavior - the function sets up devices and completes. Devices are then controlled via MQTT.
 // If connections fail later (MQTT disconnect, ESPHome failure, etc.), we need to restart the entire setup.
-// This wrapper ensures that if the device function throws an error (e.g., from a failed command),
-// we restart the setup with fresh connections.
+// This wrapper only restarts on actual errors, not on successful completion.
 const runWithSelfHealing = async (
   deviceFunction: (mqtt: any, esphome: any) => Promise<void>,
   mqtt: any,
@@ -96,15 +96,17 @@ const runWithSelfHealing = async (
       // Reset failure counter on success
       consecutiveFailures = 0;
       
-      // Run the device function - for BLE devices, this sets up all devices and completes
-      // The device setup functions use infinite retries internally, so they should run forever
-      // If they complete, it means all devices were set up successfully
+      // Run the device function - for BLE devices, this sets up all devices and completes successfully
+      // This is expected behavior - the function completes after setup, and devices are controlled via MQTT
       await deviceFunction(mqtt, esphome);
       
-      // If we get here, the function completed (shouldn't happen for BLE devices with retry logic)
-      // This means something went wrong - restart the setup
-      logWarn(`[Main] Device function ${getType()} completed unexpectedly, restarting setup...`);
-      throw new Error('Device function completed unexpectedly - restarting setup');
+      // If we get here, the function completed successfully - this is NORMAL for BLE device setup
+      // Log success and wait - if connections fail later, commands will fail and trigger recovery
+      logInfo(`[Main] Device function ${getType()} completed setup successfully. Devices are ready for commands.`);
+      
+      // Wait indefinitely - devices are set up and ready. If connections fail, commands will fail
+      // and the error handlers will catch it, or the process will restart on uncaught exceptions
+      await new Promise(() => {}); // Wait forever - never resolves
     } catch (error: any) {
       consecutiveFailures++;
       const errorMessage = error?.message || String(error);
