@@ -36,7 +36,7 @@ describe(JsonSensor.name, () => {
         unique_id: 'test_name_json_sensor',
         json_attributes_topic: 'device_topic/json_sensor/state',
         value_template: "{{ value_json.value | default('') }}",
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -53,7 +53,7 @@ describe(JsonSensor.name, () => {
         json_attributes_topic: 'device_topic/json_sensor/state',
         value_template: "{{ value_json.value | default('') }}",
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -73,7 +73,7 @@ describe(JsonSensor.name, () => {
         unique_id: 'test_name_json_sensor',
         json_attributes_topic: 'device_topic/json_sensor/state',
         value_template: "{{ value_json.value | default('') }}",
-      });
+      }, { retain: true });
     });
   });
 
@@ -90,7 +90,7 @@ describe(JsonSensor.name, () => {
       unique_id: 'test_name_json_sensor',
       json_attributes_topic: 'device_topic/json_sensor/state',
       value_template: "{{ default('') }}",
-    });
+    }, { retain: true });
   });
 
   describe('call setState', () => {
@@ -100,13 +100,13 @@ describe(JsonSensor.name, () => {
       const state = { stringValue: 'state', numberValue: 0, objectValue: { value: 10 } };
       entity.setState(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/json_sensor/state', state);
+      expect(mqtt.publish).toBeCalledWith('device_topic/json_sensor/state', state, { retain: true });
     });
 
     it('publishes available offline when setState called with null', () => {
       entity.setState(null);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/json_sensor/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/json_sensor/status', 'offline', { retain: true });
       expect(mqtt.publish).not.toBeCalledWith('device_topic/json_sensor/state', null);
     });
   });

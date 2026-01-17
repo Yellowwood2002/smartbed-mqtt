@@ -33,7 +33,7 @@ describe(Entity.name, () => {
         payload_available: 'online',
         payload_not_available: 'offline',
         unique_id: 'test_name_binary_sensor',
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -47,7 +47,7 @@ describe(Entity.name, () => {
         payload_not_available: 'offline',
         unique_id: 'test_name_binary_sensor',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
     it('when status online is receieved', async () => {
       expect(onFunc).not.toBeNull();
@@ -63,7 +63,7 @@ describe(Entity.name, () => {
         payload_available: 'online',
         payload_not_available: 'offline',
         unique_id: 'test_name_binary_sensor',
-      });
+      }, { retain: true });
     });
   });
 
@@ -73,13 +73,13 @@ describe(Entity.name, () => {
     it('online when setOnline called', () => {
       entity.setOnline();
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'online');
+      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'online', { retain: true });
     });
 
     it('offline when setOffline called', () => {
       entity.setOffline();
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'offline', { retain: true });
     });
   });
 });

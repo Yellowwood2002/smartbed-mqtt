@@ -33,7 +33,7 @@ describe(BinarySensor.name, () => {
         payload_not_available: 'offline',
         state_topic: 'device_topic/binary_sensor/state',
         unique_id: 'test_name_binary_sensor',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -51,7 +51,7 @@ describe(BinarySensor.name, () => {
         payload_not_available: 'offline',
         state_topic: 'device_topic/binary_sensor/state',
         unique_id: 'test_name_binary_sensor',
-      });
+      }, { retain: true });
     });
   });
 
@@ -64,13 +64,13 @@ describe(BinarySensor.name, () => {
     ])('publishes state %s when setState called with %s', (expected, state) => {
       entity.setState(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/state', expected);
+      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/state', expected, { retain: true });
     });
 
     it('publishes available offline when setState called with null', () => {
       entity.setState(null);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/binary_sensor/status', 'offline', { retain: true });
       expect(mqtt.publish).not.toBeCalledWith('device_topic/binary_sensor/state', null);
     });
   });

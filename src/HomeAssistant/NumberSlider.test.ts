@@ -40,7 +40,7 @@ describe(NumberSlider.name, () => {
         state_topic: 'device_topic/number_slider/state',
         unique_id: 'test_name_number_slider',
         command_topic: 'device_topic/number_slider/command',
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -59,7 +59,7 @@ describe(NumberSlider.name, () => {
         unique_id: 'test_name_number_slider',
         command_topic: 'device_topic/number_slider/command',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('on construction with config', () => {
@@ -78,7 +78,7 @@ describe(NumberSlider.name, () => {
         state_topic: 'device_topic/number_slider/state',
         unique_id: 'test_name_number_slider',
         command_topic: 'device_topic/number_slider/command',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -102,7 +102,7 @@ describe(NumberSlider.name, () => {
         state_topic: 'device_topic/number_slider/state',
         unique_id: 'test_name_number_slider',
         command_topic: 'device_topic/number_slider/command',
-      });
+      }, { retain: true });
     });
   });
 
@@ -143,7 +143,7 @@ describe(NumberSlider.name, () => {
       await onFunc(payload);
       expect(onChange).toBeCalledWith(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/state', expectedPublish);
+      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/state', expectedPublish, { retain: true });
     });
 
     it('ignores unexpected payloads', async () => {
@@ -168,13 +168,13 @@ describe(NumberSlider.name, () => {
     ])('publishes state %s when setState called with %s', (expected, state) => {
       entity.setState(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/state', expected);
+      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/state', expected, { retain: true });
     });
 
     it('publishes available offline when setState called with null', () => {
       entity.setState(null);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/number_slider/status', 'offline', { retain: true });
       expect(mqtt.publish).not.toBeCalledWith('device_topic/number_slider/state', null);
     });
   });

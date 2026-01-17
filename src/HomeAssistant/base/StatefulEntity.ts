@@ -48,7 +48,8 @@ export class StatefulEntity<T> extends Entity implements IStateful<T> {
   private sendState() {
     setTimeout(() => {
       const message = this.mapState(this.state);
-      this.mqtt.publish(this.stateTopic, message);
+      // Retain state so entities restore their last known value after HA restarts
+      this.mqtt.publish(this.stateTopic, message, { retain: true });
     }, 250);
   }
 }

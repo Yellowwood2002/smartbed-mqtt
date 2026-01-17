@@ -34,7 +34,7 @@ describe(StatefulEntity.name, () => {
         payload_not_available: 'offline',
         state_topic: 'device_topic/sensor/state',
         unique_id: 'test_name_sensor',
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -49,7 +49,7 @@ describe(StatefulEntity.name, () => {
         state_topic: 'device_topic/sensor/state',
         unique_id: 'test_name_sensor',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -67,7 +67,7 @@ describe(StatefulEntity.name, () => {
         payload_not_available: 'offline',
         state_topic: 'device_topic/sensor/state',
         unique_id: 'test_name_sensor',
-      });
+      }, { retain: true });
     });
   });
 
@@ -77,13 +77,13 @@ describe(StatefulEntity.name, () => {
     it.each(['Test State Value', ''])("publishes state when setState called with '%s'", (state) => {
       entity.setState(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/sensor/state', state);
+      expect(mqtt.publish).toBeCalledWith('device_topic/sensor/state', state, { retain: true });
     });
 
     it('publishes available offline when setState called with null', () => {
       entity.setState(null);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/sensor/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/sensor/status', 'offline', { retain: true });
       expect(mqtt.publish).not.toBeCalledWith('device_topic/sensor/state', null);
     });
   });

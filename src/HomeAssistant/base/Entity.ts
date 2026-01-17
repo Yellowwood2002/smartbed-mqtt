@@ -48,7 +48,11 @@ export class Entity implements IAvailable {
       ...this.discoveryState(),
     };
 
-    this.mqtt.publish(discoveryTopic, discoveryMessage);
+    // Retain discovery config so entities survive Home Assistant restarts
+    this.mqtt.publish(discoveryTopic, discoveryMessage, { retain: true });
+    // Ensure entities are not stuck "unavailable" (especially non-stateful ones like buttons)
+    // by publishing an initial retained availability state.
+    this.sendAvailability(ONLINE);
   }
 
   protected discoveryState(): Dictionary<any> {
@@ -72,6 +76,7 @@ export class Entity implements IAvailable {
   }
 
   private sendAvailability(availability: string) {
-    setTimeout(() => this.mqtt.publish(this.availabilityTopic, availability), 500);
+    // Retain availability so entities don't get stuck "unavailable" after HA restarts
+    setTimeout(() => this.mqtt.publish(this.availabilityTopic, availability, { retain: true }), 500);
   }
 }

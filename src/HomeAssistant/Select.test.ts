@@ -39,7 +39,7 @@ describe(Select.name, () => {
         state_topic: 'device_topic/select/state',
         unique_id: 'test_name_select',
         command_topic: 'device_topic/select/command',
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -56,7 +56,7 @@ describe(Select.name, () => {
         unique_id: 'test_name_select',
         command_topic: 'device_topic/select/command',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -78,7 +78,7 @@ describe(Select.name, () => {
         state_topic: 'device_topic/select/state',
         unique_id: 'test_name_select',
         command_topic: 'device_topic/select/command',
-      });
+      }, { retain: true });
     });
   });
 
@@ -116,7 +116,7 @@ describe(Select.name, () => {
       await onFunc(option);
       expect(onChange).toBeCalledWith(option);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/select/state', option);
+      expect(mqtt.publish).toBeCalledWith('device_topic/select/state', option, { retain: true });
     });
 
     it('ignores unexpected payloads', async () => {

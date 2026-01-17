@@ -33,7 +33,7 @@ describe(Button.name, () => {
         payload_not_available: 'offline',
         unique_id: 'test_name_button',
         command_topic: 'device_topic/button/command',
-      });
+      }, { retain: true });
     });
 
     it('on construction with config entity category', () => {
@@ -48,7 +48,7 @@ describe(Button.name, () => {
         unique_id: 'test_name_button',
         command_topic: 'device_topic/button/command',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -69,7 +69,7 @@ describe(Button.name, () => {
         payload_not_available: 'offline',
         unique_id: 'test_name_button',
         command_topic: 'device_topic/button/command',
-      });
+      }, { retain: true });
     });
   });
 

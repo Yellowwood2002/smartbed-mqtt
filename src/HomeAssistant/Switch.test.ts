@@ -37,7 +37,7 @@ describe(Switch.name, () => {
         state_topic: 'device_topic/switch/state',
         unique_id: 'test_name_switch',
         command_topic: 'device_topic/switch/command',
-      });
+      }, { retain: true });
     });
 
     it('on construction with entity category', () => {
@@ -53,7 +53,7 @@ describe(Switch.name, () => {
         unique_id: 'test_name_switch',
         command_topic: 'device_topic/switch/command',
         entity_category: 'config',
-      });
+      }, { retain: true });
     });
 
     it('when status online is receieved', async () => {
@@ -74,7 +74,7 @@ describe(Switch.name, () => {
         state_topic: 'device_topic/switch/state',
         unique_id: 'test_name_switch',
         command_topic: 'device_topic/switch/command',
-      });
+      }, { retain: true });
     });
   });
 
@@ -115,7 +115,7 @@ describe(Switch.name, () => {
       await onFunc(payload);
       expect(onChange).toBeCalledWith(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/switch/state', expectedPublish);
+      expect(mqtt.publish).toBeCalledWith('device_topic/switch/state', expectedPublish, { retain: true });
     });
 
     it('ignores unexpected payloads', async () => {
@@ -140,13 +140,13 @@ describe(Switch.name, () => {
     ])('publishes state %s when setState called with %s', (expected, state) => {
       entity.setState(state);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/switch/state', expected);
+      expect(mqtt.publish).toBeCalledWith('device_topic/switch/state', expected, { retain: true });
     });
 
     it('publishes available offline when setState called with null', () => {
       entity.setState(null);
       jest.runAllTimers();
-      expect(mqtt.publish).toBeCalledWith('device_topic/switch/status', 'offline');
+      expect(mqtt.publish).toBeCalledWith('device_topic/switch/status', 'offline', { retain: true });
       expect(mqtt.publish).not.toBeCalledWith('device_topic/switch/state', null);
     });
   });
