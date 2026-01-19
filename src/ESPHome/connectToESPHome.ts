@@ -64,7 +64,7 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
           // never connect. In production, pin to the presented node name so encryption remains
           // name-verified, but we recover automatically.
           if (isServerNameMismatch(error)) {
-            const { expected, got } = extractServerNameMismatch(error);
+            const { got } = extractServerNameMismatch(error);
             if (got && got !== expectedServerName) {
               logWarnDedup(
                 `esphome:serverNameMismatch:${config.host}:${config.port || 6053}`,
