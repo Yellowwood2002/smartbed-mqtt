@@ -1,6 +1,7 @@
 import { Connection } from '@2colors/esphome-native-api';
 import { Deferred } from '@utils/deferred';
 import { logInfo, logWarn } from '@utils/logger';
+import { wait } from '@utils/wait';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
 import { BLEAdvertisement } from './types/BLEAdvertisement';
@@ -34,6 +35,8 @@ export class ESPConnection implements IESPConnection {
     deviceNames = deviceNames.map((name) => name.toLowerCase());
     const bleDevices: IBLEDevice[] = [];
     const complete = new Deferred<void>();
+    const timeoutMs = 30_000;
+    const stop = Promise.race([complete.then(() => 'complete' as const), wait(timeoutMs).then(() => 'timeout' as const)]);
     await this.discoverBLEDevices(
       (bleDevice) => {
         const { name, mac } = bleDevice;
@@ -47,10 +50,14 @@ export class ESPConnection implements IESPConnection {
         if (deviceNames.length) return;
         complete.resolve();
       },
-      complete,
+      stop.then(() => undefined),
       nameMapper
     );
-    if (deviceNames.length) logWarn(`[ESPHome] Cound not find address for device(s): ${deviceNames.join(', ')}`);
+    const stopReason = await stop;
+    if (deviceNames.length) {
+      const suffix = stopReason === 'timeout' ? ` (timed out after ${timeoutMs / 1000}s)` : '';
+      logWarn(`[ESPHome] Could not find address for device(s): ${deviceNames.join(', ')}${suffix}`);
+    }
     return bleDevices;
   }
 

@@ -4,6 +4,7 @@ import { logError, logInfo, logWarn } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
 import { connectToESPHome } from 'ESPHome/connectToESPHome';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 import { ergomotion } from 'ErgoMotion/ergomotion';
 import { ergowifi } from 'ErgoWifi/ergowifi';
 import { keeson } from 'Keeson/keeson';
@@ -103,10 +104,22 @@ const runWithSelfHealing = async (
       // If we get here, the function completed successfully - this is NORMAL for BLE device setup
       // Log success and wait - if connections fail later, commands will fail and trigger recovery
       logInfo(`[Main] Device function ${getType()} completed setup successfully. Devices are ready for commands.`);
-      
-      // Wait indefinitely - devices are set up and ready. If connections fail, commands will fail
-      // and the error handlers will catch it, or the process will restart on uncaught exceptions
-      await new Promise(() => {}); // Wait forever - never resolves
+
+      // Wait until diagnostics requests a reconnect (e.g. repeated BLE errors).
+      // This is the missing link: many MQTT entity handlers catch/log errors, so we need a central
+      // place to decide when "it's broken enough" to reconnect ESPHome/MQTT.
+      const reason = await healthMonitor.waitForRestartRequest();
+      const reasonText =
+        reason.kind === 'manual'
+          ? reason.reason
+          : `${reason.reason}${reason.deviceName ? ` (device=${reason.deviceName})` : ''}`;
+      logWarn(`[Main] Reconnect requested by health monitor: ${reasonText}`);
+
+      // Reset for the next setup run.
+      healthMonitor.resetRestartSignal();
+
+      // Trigger outer loop reconnect.
+      throw new Error(reasonText);
     } catch (error: any) {
       consecutiveFailures++;
       const errorMessage = error?.message || String(error);
@@ -164,6 +177,7 @@ const start = async () => {
     try {
       // Reconnect MQTT if needed (self-healing)
       mqtt = await connectToMQTT();
+      healthMonitor.init(mqtt, type);
       
       // Reconnect ESPHome if needed (self-healing)
       esphome = await connectToESPHome();

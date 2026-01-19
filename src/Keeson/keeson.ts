@@ -128,6 +128,12 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
   if (deviceNames.length !== devices.length) return logError('[Keeson] Duplicate name detected in configuration');
 
   const bleDevices = await esphome.getBLEDevices(deviceNames);
+  if (bleDevices.length === 0) {
+    // IMPORTANT: If discovery finds nothing (bed asleep / proxy offline), don't hang or "succeed".
+    // Throw so the outer setup loop retries and we get fresh visibility into discovery progress.
+    logWarn(`[Keeson] No BLE devices discovered for: ${deviceNames.join(', ')} (will retry)`);
+    throw new Error('No Keeson BLE devices discovered');
+  }
   const setupPromises: Promise<void>[] = [];
 
   for (const bleDevice of bleDevices) {

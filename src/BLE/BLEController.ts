@@ -9,6 +9,7 @@ import { IEventSource } from '../Common/IEventSource';
 import { arrayEquals } from '@utils/arrayEquals';
 import { deepArrayEquals } from '@utils/deepArrayEquals';
 import { logError, logInfo } from '@utils/logger';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 
 export class BLEController<TCommand> extends EventEmitter implements IEventSource, IController<TCommand> {
   cache: Dictionary<Object> = {};
@@ -61,8 +62,10 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     try {
       await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
       logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name}`);
+      healthMonitor.recordBleSuccess(this.deviceData.device.name);
     } catch (e) {
       logError(`[BLE] Failed to write characteristic to device ${this.deviceData.device.name}`, e);
+      healthMonitor.recordBleFailure(this.deviceData.device.name, e);
       throw e; // Re-throw so callers know the write failed
     }
     if (this.stayConnected) return;
@@ -82,6 +85,7 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
       logInfo(`[BLE] Successfully connected to device ${this.deviceData.device.name} for command execution`);
     } catch (error: any) {
       logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
+      healthMonitor.recordBleFailure(this.deviceData.device.name, error);
       throw error;
     }
 
