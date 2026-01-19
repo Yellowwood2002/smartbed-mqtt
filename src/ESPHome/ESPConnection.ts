@@ -1,6 +1,6 @@
 import { Connection } from '@2colors/esphome-native-api';
 import { Deferred } from '@utils/deferred';
-import { logInfo, logInfoDedup, logWarn, logWarnDedup } from '@utils/logger';
+import { logInfo, logInfoDedup, logWarnDedup } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
