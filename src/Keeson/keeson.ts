@@ -127,7 +127,8 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
 
   if (deviceNames.length !== devices.length) return logError('[Keeson] Duplicate name detected in configuration');
 
-  const bleDevices = await esphome.getBLEDevices(deviceNames);
+  // Keeson/purple controllers commonly advertise names with null padding; normalize it.
+  const bleDevices = await esphome.getBLEDevices(deviceNames, (name) => name?.replace(/\0/g, ''));
   if (bleDevices.length === 0) {
     // IMPORTANT: If discovery finds nothing (bed asleep / proxy offline), don't hang or "succeed".
     // Throw so the outer setup loop retries and we get fresh visibility into discovery progress.

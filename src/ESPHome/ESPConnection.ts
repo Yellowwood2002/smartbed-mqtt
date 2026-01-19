@@ -40,8 +40,11 @@ export class ESPConnection implements IESPConnection {
     await this.discoverBLEDevices(
       (bleDevice) => {
         const { name, mac } = bleDevice;
+        const lowerName = name.toLowerCase();
         let index = deviceNames.indexOf(mac);
-        if (index === -1) index = deviceNames.indexOf(name.toLowerCase());
+        if (index === -1) index = deviceNames.indexOf(lowerName);
+        // Real-world: many devices advertise names with suffixes/padding, so allow prefix matches
+        if (index === -1) index = deviceNames.findIndex((deviceName) => lowerName.startsWith(deviceName));
         if (index === -1) return;
 
         deviceNames.splice(index, 1);
