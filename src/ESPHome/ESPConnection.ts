@@ -2,7 +2,7 @@ import { Connection } from '@2colors/esphome-native-api';
 import { Deferred } from '@utils/deferred';
 import { logInfo, logInfoDedup, logWarnDedup } from '@utils/logger';
 import { wait } from '@utils/wait';
-import { IESPConnection } from './IESPConnection';
+import { DiscoveredBLEAdvertisement, IESPConnection } from './IESPConnection';
 import { connect } from './connect';
 import { BLEAdvertisement } from './types/BLEAdvertisement';
 import { BLEDevice } from './types/BLEDevice';
@@ -40,8 +40,8 @@ export class ESPConnection implements IESPConnection {
     const timeoutMs = 30_000;
     const stop = Promise.race([complete.then(() => 'complete' as const), wait(timeoutMs).then(() => 'timeout' as const)]);
     await this.discoverBLEDevices(
-      (bleDevice) => {
-        const { name, mac } = bleDevice;
+      (device) => {
+        const { name, mac, advertisement, connection } = device;
         const lowerName = name.toLowerCase();
         /**
          * Matching strategy (battle-tested for BLE proxy + consumer devices):
@@ -64,7 +64,9 @@ export class ESPConnection implements IESPConnection {
 
         deviceNames.splice(index, 1);
         logInfo(`[ESPHome] Found device: ${name} (${mac})`);
-        bleDevices.push(bleDevice);
+        // IMPORTANT: only create BLEDevice instances for matched devices to avoid accumulating
+        // EventEmitter listeners for every advertisement seen during scanning.
+        bleDevices.push(new BLEDevice(name, advertisement, connection));
         if (deviceNames.length) return;
         complete.resolve();
       },
@@ -81,7 +83,7 @@ export class ESPConnection implements IESPConnection {
   }
 
   async discoverBLEDevices(
-    onNewDeviceFound: (bleDevice: IBLEDevice) => void,
+    onNewDeviceFound: (device: DiscoveredBLEAdvertisement) => void,
     complete: Promise<void>,
     nameMapper?: (name: string) => string
   ) {
@@ -107,7 +109,8 @@ export class ESPConnection implements IESPConnection {
 
         if (name && nameMapper) name = nameMapper(name);
         if (!name) name = address.toString(16).padStart(12, '0');
-        onNewDeviceFound(new BLEDevice(name, advertisement, connection));
+        const mac = address.toString(16).padStart(12, '0');
+        onNewDeviceFound({ name, mac, address, advertisement, connection });
       },
     });
     const listeners = this.connections.map(listenerBuilder);

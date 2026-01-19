@@ -3,6 +3,8 @@ import { getDevices } from './options';
 import { IESPConnection } from 'ESPHome/IESPConnection';
 import { buildDictionary } from '@utils/buildDictionary';
 import { Deferred } from '@utils/deferred';
+import { DiscoveredBLEAdvertisement } from 'ESPHome/IESPConnection';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 
 const characteristicPropertyValues = {
@@ -34,20 +36,22 @@ export const scanner = async (esphome: IESPConnection) => {
   if (deviceNames.length !== devices.length) return logError('[Scanner] Duplicate name detected in configuration');
 
   const complete = new Deferred<void>();
-  const logDevice = async ({ name, mac, advertisement }: IBLEDevice) => {
+  const logDevice = async ({ name, mac, advertisement }: { name: string; mac: string; advertisement: any }) => {
     logInfo(`[Scanner] Found device: ${name} (${mac}):\n${JSON.stringify(advertisement)}`);
   };
 
-  const handleMatchingDevice = async (bleDevice: IBLEDevice) => {
-    const { name, mac } = bleDevice;
+  const handleMatchingDevice = async (found: DiscoveredBLEAdvertisement) => {
+    const { name, mac, advertisement, connection } = found;
     const lowerName = name.toLowerCase();
     let index = deviceNames.indexOf(mac);
     if (index === -1) index = deviceNames.indexOf(lowerName);
     if (index === -1) index = deviceNames.findIndex((deviceName) => lowerName.startsWith(deviceName));
     if (index === -1) return;
 
-    logDevice(bleDevice);
+    logDevice(found);
     const mapName = deviceNames.splice(index, 1)[0];
+    // Only build a full BLEDevice (adds listeners) for devices we're actually going to interrogate.
+    const bleDevice: IBLEDevice = new BLEDevice(name, advertisement, connection);
     const { connect, disconnect, pair, getDeviceInfo, getServices } = bleDevice;
     logInfo(`[Scanner] Connecting`);
     await connect();
@@ -118,7 +122,12 @@ export const scanner = async (esphome: IESPConnection) => {
     complete.resolve();
   };
 
-  const worker = devices.length ? handleMatchingDevice : logDevice;
+  const worker = devices.length
+    ? handleMatchingDevice
+    : async (found: DiscoveredBLEAdvertisement) => {
+        // No devices configured: log advertisements without creating BLEDevice instances.
+        await logDevice(found);
+      };
   if (!devices.length) logInfo('[Scanner] No devices configured, logging all named devices');
   await esphome.discoverBLEDevices(worker, complete, (name) => name?.replace(/\0/g, ''));
   esphome.disconnect();
