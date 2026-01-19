@@ -89,13 +89,24 @@ export class ESPConnection implements IESPConnection {
     const listenerBuilder = (connection: Connection) => ({
       connection,
       listener: (advertisement: BLEAdvertisement) => {
-        let { name } = advertisement;
+        /**
+         * Project memory:
+         * Many BLE devices (including some bed controllers) advertise without a local name.
+         * If we drop unnamed advertisements, discovery-by-MAC can never work and the add-on
+         * will loop forever saying "device not discovered" even though the proxy sees it.
+         *
+         * Strategy:
+         * - Always accept advertisements (named or unnamed).
+         * - Use the 12-hex derived address as a stable fallback name when advertisement.name is empty.
+         */
+        let name = advertisement.name ?? '';
         const { address } = advertisement;
 
-        if (seenAddresses.includes(address) || !name) return;
+        if (seenAddresses.includes(address)) return;
         seenAddresses.push(address);
 
-        if (nameMapper) name = nameMapper(name);
+        if (name && nameMapper) name = nameMapper(name);
+        if (!name) name = address.toString(16).padStart(12, '0');
         onNewDeviceFound(new BLEDevice(name, advertisement, connection));
       },
     });
