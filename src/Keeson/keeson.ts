@@ -1,6 +1,6 @@
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { buildDictionary } from '@utils/buildDictionary';
-import { logError, logInfo, logWarn } from '@utils/logger';
+import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { setupDeviceInfoSensor } from 'BLE/setupDeviceInfoSensor';
 import { buildMQTTDeviceData } from 'Common/buildMQTTDeviceData';
@@ -127,14 +127,43 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
 
   if (deviceNames.length !== devices.length) return logError('[Keeson] Duplicate name detected in configuration');
 
-  // Keeson/purple controllers commonly advertise names with null padding; normalize it.
-  const bleDevices = await esphome.getBLEDevices(deviceNames, (name) => name?.replace(/\0/g, ''));
-  if (bleDevices.length === 0) {
-    // IMPORTANT: If discovery finds nothing (bed asleep / proxy offline), don't hang or "succeed".
-    // Throw so the outer setup loop retries and we get fresh visibility into discovery progress.
-    logWarn(`[Keeson] No BLE devices discovered for: ${deviceNames.join(', ')} (will retry)`);
-    throw new Error('No Keeson BLE devices discovered');
-  }
+  /**
+   * Discovery backoff (project memory)
+   *
+   * Why:
+   * - When the bed/controller is asleep or out of range, discovery often fails repeatedly.
+   * - Throwing immediately caused a tight retry loop in the main setup, spamming logs.
+   *
+   * How:
+   * - Keep retrying discovery *inside* Keeson setup with exponential backoff and rate-limited logs.
+   * - This is safer for long-term operation and keeps HA logs readable.
+   */
+  const bleDevices = await retryWithBackoff(
+    async () => {
+      // Keeson/Purple controllers commonly advertise names with null padding; normalize it.
+      const found = await esphome.getBLEDevices(deviceNames, (name) => name?.replace(/\0/g, ''));
+      if (found.length === 0) throw new Error('No Keeson BLE devices discovered');
+      return found;
+    },
+    {
+      maxRetries: undefined, // Keep trying until the bed is awake / in range.
+      initialDelayMs: 10_000,
+      maxDelayMs: 120_000,
+      backoffMultiplier: 1.5,
+      // Discovery failures are effectively retryable; allow socket/BLE transient errors too.
+      isRetryableError: () => true,
+      onRetry: (_error: any, attempt: number, delayMs: number) => {
+        const key = `keeson:discover:${deviceNames.sort().join(',')}`;
+        logWarnDedup(
+          key,
+          60_000,
+          `[Keeson] No BLE devices discovered for: ${deviceNames.join(', ')} (attempt ${attempt}, retry in ${Math.round(
+            delayMs / 1000
+          )}s)`
+        );
+      },
+    }
+  );
   const setupPromises: Promise<void>[] = [];
 
   for (const bleDevice of bleDevices) {

@@ -1,6 +1,6 @@
 import { connectToMQTT } from '@mqtt/connectToMQTT';
 import { loadStrings } from '@utils/getString';
-import { logError, logInfo, logWarn } from '@utils/logger';
+import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
 import { connectToESPHome } from 'ESPHome/connectToESPHome';
@@ -20,17 +20,15 @@ import { scanner } from 'Scanner/scanner';
 import { sleeptracker } from 'Sleeptracker/sleeptracker';
 import { solace } from 'Solace/solace';
 
+let exiting = false;
 const processExit = (exitCode?: number) => {
-  if (exitCode && exitCode > 0) {
-    logError(`Exit code: ${exitCode}`);
-  }
-  process.exit();
+  if (exiting) return;
+  exiting = true;
+  if (exitCode !== undefined && exitCode > 0) logError(`Exit code: ${exitCode}`);
+  process.exit(exitCode ?? 0);
 };
 
-process.on('exit', () => {
-  logWarn('Shutting down Smartbed-MQTT...');
-  processExit(0);
-});
+process.on('exit', (code) => logWarn(`Shutting down Smartbed-MQTT... (code=${code})`));
 process.on('SIGINT', () => processExit(0));
 process.on('SIGTERM', () => processExit(0));
 process.on('uncaughtException', (err) => {
@@ -47,9 +45,24 @@ process.on('uncaughtException', (err) => {
                        errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
   
   if (isSocketError) {
-    logWarn(`[Main] Uncaught socket/BLE error (will be handled by retry logic): ${errorCode || errorMessage}`, errorMessage);
-    // Don't exit - let the retry logic handle it
-    // The error will be caught by the retry mechanism in start()
+    /**
+     * Project memory:
+     * Uncaught socket errors (e.g. ECONNRESET from the ESPHome API socket) can fire repeatedly.
+     * Continuing after an uncaught exception is unsafe and leads to log spam and corrupted state.
+     *
+     * Production behavior:
+     * - Rate limit the log line
+     * - Exit so Supervisor restarts cleanly (it provides backoff)
+     */
+    logWarnDedup(
+      'main:uncaught:socket',
+      10_000,
+      `[Main] Uncaught socket/BLE error (requesting restart): ${errorCode || errorMessage}`,
+      errorMessage
+    );
+    // Best-effort publish health snapshot before exit
+    healthMonitor.requestRestart({ kind: 'ble', reason: 'uncaught socket/BLE error', error: errorCode || errorMessage });
+    processExit(1);
   } else {
     logError('[Main] Uncaught exception:', err);
     processExit(2);
@@ -70,8 +83,18 @@ process.on('unhandledRejection', (reason: any, _promise: Promise<any>) => {
                        errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
   
   if (isSocketError) {
-    logWarn(`[Main] Unhandled promise rejection (socket/BLE error, will be handled by retry logic): ${errorCode || errorMessage}`, errorMessage);
-    // Don't exit - let the retry logic handle it
+    logWarnDedup(
+      'main:unhandledRejection:socket',
+      10_000,
+      `[Main] Unhandled promise rejection (socket/BLE error, requesting restart): ${errorCode || errorMessage}`,
+      errorMessage
+    );
+    healthMonitor.requestRestart({
+      kind: 'ble',
+      reason: 'unhandled promise rejection (socket/BLE error)',
+      error: errorCode || errorMessage,
+    });
+    processExit(1);
   } else {
     logError('[Main] Unhandled promise rejection:', reason);
     // For non-socket errors, log but don't exit - let the monitoring loop handle recovery

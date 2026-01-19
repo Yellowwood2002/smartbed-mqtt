@@ -1,6 +1,6 @@
 import { Connection } from '@2colors/esphome-native-api';
 import { Deferred } from '@utils/deferred';
-import { logInfo, logWarn } from '@utils/logger';
+import { logInfo, logInfoDedup, logWarn, logWarnDedup } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
@@ -31,7 +31,9 @@ export class ESPConnection implements IESPConnection {
   }
 
   async getBLEDevices(deviceNames: string[], nameMapper?: (name: string) => string): Promise<IBLEDevice[]> {
-    logInfo(`[ESPHome] Searching for device(s): ${deviceNames.join(', ')}`);
+    // Rate limit repetitive scan logs (device may be asleep/out of range).
+    const searchKey = `esphome:search:${deviceNames.map((d) => d.toLowerCase()).sort().join(',')}`;
+    logInfoDedup(searchKey, 60_000, `[ESPHome] Searching for device(s): ${deviceNames.join(', ')}`);
     deviceNames = deviceNames.map((name) => name.toLowerCase());
     const bleDevices: IBLEDevice[] = [];
     const complete = new Deferred<void>();
@@ -72,7 +74,8 @@ export class ESPConnection implements IESPConnection {
     const stopReason = await stop;
     if (deviceNames.length) {
       const suffix = stopReason === 'timeout' ? ` (timed out after ${timeoutMs / 1000}s)` : '';
-      logWarn(`[ESPHome] Could not find address for device(s): ${deviceNames.join(', ')}${suffix}`);
+      const missKey = `esphome:miss:${deviceNames.sort().join(',')}`;
+      logWarnDedup(missKey, 60_000, `[ESPHome] Could not find address for device(s): ${deviceNames.join(', ')}${suffix}`);
     }
     return bleDevices;
   }
