@@ -41,10 +41,23 @@ export class ESPConnection implements IESPConnection {
       (bleDevice) => {
         const { name, mac } = bleDevice;
         const lowerName = name.toLowerCase();
-        let index = deviceNames.indexOf(mac);
-        if (index === -1) index = deviceNames.indexOf(lowerName);
-        // Real-world: many devices advertise names with suffixes/padding, so allow prefix matches
-        if (index === -1) index = deviceNames.findIndex((deviceName) => lowerName.startsWith(deviceName));
+        /**
+         * Matching strategy (battle-tested for BLE proxy + consumer devices):
+         * - Some devices advertise as "KSBT<mac>" (Keeson/Purple), while we often want to configure just "<mac>".
+         * - Names can have null padding and/or suffixes; nameMapper can normalize, but we still need tolerant matching.
+         * - We prefer exact matches, but allow safe derived matches (prefix/suffix vs mac) to avoid "can't find device"
+         *   despite the proxy seeing it.
+         */
+        const index = deviceNames.findIndex((deviceName) => {
+          // Exact identifiers
+          if (deviceName === mac) return true;
+          if (deviceName === lowerName) return true;
+          // Prefix/suffix tolerance (e.g. "ksbt<mac>" vs "<mac>")
+          if (lowerName.startsWith(deviceName)) return true;
+          if (lowerName.endsWith(deviceName)) return true;
+          if (deviceName.endsWith(mac)) return true;
+          return false;
+        });
         if (index === -1) return;
 
         deviceNames.splice(index, 1);
