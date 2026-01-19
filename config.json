@@ -204,7 +204,8 @@
     "keesonDevices": [
       {
         "name": "str",
-        "friendlyName": "str"
+        "friendlyName": "str",
+        "stayConnected": "bool?"
       }
     ],
     "octoDevices": [
