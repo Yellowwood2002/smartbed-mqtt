@@ -1,16 +1,37 @@
-.DS_Store
-.vscode/
-node_modules/
+# Safety .gitignore for /config/smartbedmqtt_src
+#
+# Why:
+# - Prevent committing Home Assistant secrets or runtime state if this repo is ever
+#   initialized inside /config.
+# - The shell_command publishes via `git add .`, so this must be conservative.
+#
+# How:
+# - Ignore common HA sensitive/runtime files and folders.
 
-dist/
-build/
-release/
-coverage/
+# Home Assistant secrets/config
+secrets.yaml
+configuration.yaml
+known_devices.yaml
 
-credentials/
-logs/
-test_screenshots/
-autotest_output/
+# Storage mode dashboards / auth / tokens / registries
+.storage/
+.cloud/
 
-yarn-error.log
-thumbs.db
+# SSL certs/keys
+ssl/
+*.pem
+*.key
+*.crt
+*.pfx
+
+# Databases + logs
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite*
+*.log
+
+# Backups
+backups/
+backup/
