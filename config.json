@@ -1,6 +1,6 @@
 {
   "name": "Smartbed MQTT",
-  "version": "1.1.22",
+  "version": "1.1.23",
   "slug": "smartbed-mqtt",
   "description": "A Home Assistant add-on to enable controlling smart beds.",
   "url": "https://github.com/richardhopton/smartbed-mqtt",
@@ -14,7 +14,7 @@
     "mqtt_port": "<auto_detect>",
     "mqtt_user": "<auto_detect>",
     "mqtt_password": "<auto_detect>",
-    "type": "sleeptracker",
+    "type": "keeson",
     "sleeptrackerRefreshFrequency": 1,
     "sleeptrackerCredentials": [
       {
@@ -44,7 +44,10 @@
     ],
     "bleProxies": [
       {
-        "host": "bluetooth-proxy.local"
+        "host": "10.0.0.111",
+        "port": 6053,
+        "encryptionKey": "OgiEeHOP9yibDzwiJIhtOhJFaVu9KQk5uZFZJSRsThk=",
+        "expectedServerName": "m5stack-atom-lite-fdb45c"
       }
     ],
     "richmatDevices": [
@@ -96,8 +99,10 @@
     ],
     "keesonDevices": [
       {
-        "name": "KSBT03C000015046",
-        "friendlyName": "Keeson Bed"
+        "name": "KSBT04C060027642",
+        "friendlyName": "Purple Bed",
+        "aliases": "D2:A3:3C:41:A0:72 KSBT04C060027638 F0:1D:DF:BB:16:DE",
+        "stayConnected": true
       }
     ],
     "octoDevices": [
@@ -205,7 +210,8 @@
       {
         "name": "str",
         "friendlyName": "str",
-        "stayConnected": "bool?"
+        "stayConnected": "bool?",
+        "aliases": "str?"
       }
     ],
     "octoDevices": [

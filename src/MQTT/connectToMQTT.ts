@@ -6,6 +6,14 @@ import { MQTTConnection } from './MQTTConnection';
 
 export const connectToMQTT = (): Promise<IMQTTConnection> => {
   logInfo('[MQTT] Connecting...');
+
+  /**
+   * Project memory (operational hardening):
+   * Expose a simple retained online/offline topic so HA + automations can understand whether
+   * the add-on is currently connected to MQTT. We also set an MQTT Last Will so unexpected
+   * crashes produce an 'offline' state without relying on graceful shutdown.
+   */
+  const STATUS_TOPIC = 'smartbedmqtt/status';
   
   // Try connecting with the configured host first
   const tryConnect = (config: typeof MQTTConfig): Promise<IMQTTConnection> => {
@@ -15,6 +23,12 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
         ...config,
         reconnectPeriod: 5000, // Reconnect every 5 seconds
         connectTimeout: 30000, // 30 second connection timeout
+        will: {
+          topic: STATUS_TOPIC,
+          payload: 'offline',
+          qos: 1,
+          retain: true,
+        },
       } as any); // Type assertion needed because config may have string port/username/password from env
       
       const cleanup = () => {
@@ -24,14 +38,28 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
       client.once('connect', () => {
         cleanup();
         logInfo('[MQTT] Connected');
+
+        // Publish retained online marker now that we're connected.
+        try {
+          client.publish(STATUS_TOPIC, 'online', { qos: 1, retain: true });
+        } catch (e: any) {
+          logWarn('[MQTT] Failed to publish online status:', e?.message || String(e));
+        }
         
         // Set up reconnection monitoring
         client.on('close', () => {
           logWarn('[MQTT] Connection closed, will attempt to reconnect...');
+          // If this is a graceful close, publish offline. Last Will covers ungraceful exits.
+          try {
+            client.publish(STATUS_TOPIC, 'offline', { qos: 1, retain: true });
+          } catch {}
         });
         
         client.on('offline', () => {
           logWarn('[MQTT] Client went offline, will attempt to reconnect...');
+          try {
+            client.publish(STATUS_TOPIC, 'offline', { qos: 1, retain: true });
+          } catch {}
         });
         
         client.on('error', (error: any) => {

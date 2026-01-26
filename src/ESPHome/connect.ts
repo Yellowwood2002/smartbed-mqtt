@@ -1,71 +1,112 @@
 import { Connection } from '@2colors/esphome-native-api';
 import { logError, logInfo, logWarn } from '@utils/logger';
 
+/**
+ * Establish an ESPHome native API connection robustly.
+ *
+ * Project memory / Why:
+ * - The previous implementation attached an 'error' handler, called `connection.connect()`,
+ *   and then immediately removed the handler. Because the actual socket handshake is async,
+ *   this could miss connection errors entirely and leave callers thinking they are connected
+ *   while subscriptions silently stop delivering data.
+ *
+ * How:
+ * - Resolve only after 'authorized' and successful bluetooth proxy feature validation.
+ * - Reject on the first 'error' or on a hard timeout.
+ * - Always remove listeners on resolve/reject to avoid leaks.
+ */
 export const connect = (connection: Connection) => {
+  const CONNECT_TIMEOUT_MS = 30_000;
+
   return new Promise<Connection>((resolve, reject) => {
-    const errorHandler = (error: any) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      connection.off('authorized', onAuthorized);
+      connection.off('error', onError);
+    };
+
+    const fail = (error: any) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       logError('[ESPHome] Failed Connecting:', error);
       reject(error);
     };
-    connection.once('authorized', async () => {
-      logInfo('[ESPHome] Connected:', connection.host);
-      connection.off('error', errorHandler);
-      
-      // Add persistent socket error handler for ECONNRESET and other socket errors
-      const socketErrorHandler = (error: any) => {
-        const errorMessage = error?.message || String(error);
-        const errorCode = error?.code || '';
-        const isSocketError = errorCode === 'ECONNRESET' || 
-                             errorCode === 'ECONNREFUSED' || 
-                             errorCode === 'ETIMEDOUT' ||
-                             errorMessage.includes('ECONNRESET') ||
-                             errorMessage.includes('socket') ||
-                             errorMessage.includes('reset');
-        
-        if (isSocketError) {
-          logWarn(`[ESPHome] Socket error on ${connection.host} (${errorCode || errorMessage}), connection will be re-established:`, errorMessage);
-          // Don't reject here - let the reconnection logic handle it
-          // The error will be caught by the retry mechanism
-        } else {
-          logWarn(`[ESPHome] Connection error on ${connection.host}:`, errorMessage);
-        }
-      };
-      
-      // Listen for socket errors on the underlying connection
-      connection.on('error', socketErrorHandler);
-      
-      // Also try to access the socket directly if available
-      if ((connection as any).socket) {
-        const socket = (connection as any).socket;
-        socket.on('error', socketErrorHandler);
-        socket.on('close', () => {
-          logWarn(`[ESPHome] Socket closed on ${connection.host}, will attempt reconnection`);
-        });
+
+    const onError = (error: any) => {
+      // Surface socket errors to the outer retry loop (connectToESPHome handles retries).
+      fail(error);
+    };
+
+    const socketErrorHandler = (error: any) => {
+      const errorMessage = error?.message || String(error);
+      const errorCode = error?.code || '';
+      const isSocketError =
+        errorCode === 'ECONNRESET' ||
+        errorCode === 'ECONNREFUSED' ||
+        errorCode === 'ETIMEDOUT' ||
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('ECONNREFUSED') ||
+        errorMessage.includes('ETIMEDOUT') ||
+        errorMessage.toLowerCase().includes('socket') ||
+        errorMessage.toLowerCase().includes('reset') ||
+        errorMessage.toLowerCase().includes('timeout');
+
+      if (isSocketError) {
+        logWarn(
+          `[ESPHome] Socket error on ${connection.host} (${errorCode || errorMessage})`,
+          errorMessage
+        );
+      } else {
+        logWarn(`[ESPHome] Connection error on ${connection.host}`, errorMessage);
       }
-      
-      // TODO: Fix next two lines after new version of esphome-native-api is released
-      const deviceInfo = await connection.deviceInfoService();
-      const { bluetoothProxyFeatureFlags } = deviceInfo as any;
-      if (!bluetoothProxyFeatureFlags) {
-        logError('[ESPHome] No Bluetooth proxy features detected:', connection.host);
-        return reject();
-      }
-      resolve(connection);
-    });
-    const doConnect = (handler: (error: any) => void) => {
+      // Do not reject here; once connected, higher-level code decides when to reconnect.
+    };
+
+    const onAuthorized = async () => {
+      if (settled) return;
       try {
-        connection.once('error', handler);
-        connection.connect();
-        connection.off('error', handler);
-        connection.once('error', errorHandler);
-      } catch (err) {
-        errorHandler(err);
+        // Validate this is actually a BLE proxy.
+        // TODO: Fix after new version of esphome-native-api is released (bluetoothProxyFeatureFlags typing).
+        const deviceInfo = await connection.deviceInfoService();
+        const { bluetoothProxyFeatureFlags } = deviceInfo as any;
+        if (!bluetoothProxyFeatureFlags) {
+          throw new Error(`No Bluetooth proxy features detected for ${connection.host}`);
+        }
+
+        settled = true;
+        cleanup();
+
+        // After the handshake is complete, attach persistent error logging.
+        connection.on('error', socketErrorHandler);
+        if ((connection as any).socket) {
+          const socket = (connection as any).socket;
+          socket.on('error', socketErrorHandler);
+          socket.on('close', () => {
+            logWarn(`[ESPHome] Socket closed on ${connection.host}`);
+          });
+        }
+
+        logInfo('[ESPHome] Connected:', connection.host);
+        resolve(connection);
+      } catch (e) {
+        fail(e);
       }
     };
-    const retryHandler = (error: any) => {
-      logError('[ESPHome] Failed Connecting (will retry):', error);
-      doConnect(errorHandler);
-    };
-    doConnect(retryHandler);
+
+    timeout = setTimeout(() => fail(new Error(`ESPHome connect timeout after ${CONNECT_TIMEOUT_MS}ms`)), CONNECT_TIMEOUT_MS);
+
+    // Attach listeners BEFORE connect() so we don't miss early errors.
+    connection.once('authorized', onAuthorized);
+    connection.once('error', onError);
+
+    try {
+      connection.connect();
+    } catch (e) {
+      fail(e);
+    }
   });
 };

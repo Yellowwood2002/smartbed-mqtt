@@ -1,5 +1,6 @@
 import { connectToMQTT } from '@mqtt/connectToMQTT';
 import { loadStrings } from '@utils/getString';
+import { getBuildInfo } from '@utils/buildInfo';
 import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
@@ -133,7 +134,7 @@ const runWithSelfHealing = async (
       // place to decide when "it's broken enough" to reconnect ESPHome/MQTT.
       const reason = await healthMonitor.waitForRestartRequest();
       const reasonText =
-        reason.kind === 'manual'
+        reason.kind === 'manual' || reason.kind === 'maintenance'
           ? reason.reason
           : `${reason.reason}${reason.deviceName ? ` (device=${reason.deviceName})` : ''}`;
       logWarn(`[Main] Reconnect requested by health monitor: ${reasonText}`);
@@ -177,6 +178,17 @@ const runWithSelfHealing = async (
 
 const start = async () => {
   await loadStrings();
+
+  /**
+   * Project memory (runtime fingerprint):
+   * Home Assistant add-on rebuilds/reinstalls can accidentally keep pointing at an upstream repo
+   * or a cached build. This explicit startup log makes it unambiguous which fork is running.
+   */
+  logInfo('Forked By Yellowwood2002');
+  const build = getBuildInfo();
+  logInfo(
+    `[Build] fork=${build.fork} version=${build.version ?? 'unknown'} git=${build.gitSha} built=${build.buildTime}`
+  );
 
   // http/udp devices - these complete and exit, so no self-healing needed
   const type = getType();

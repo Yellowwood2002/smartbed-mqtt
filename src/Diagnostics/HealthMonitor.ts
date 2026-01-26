@@ -7,6 +7,7 @@ import { logInfo, logWarn } from '@utils/logger';
 
 type RestartReason =
   | { kind: 'manual'; reason: string }
+  | { kind: 'maintenance'; reason: string }
   | { kind: 'ble'; reason: string; deviceName?: string; error?: string };
 
 type BleErrorSnapshot = {
@@ -30,6 +31,7 @@ class HealthMonitor {
 
   private startedAt = Date.now();
   private heartbeatTimer?: NodeJS.Timeout;
+  private maintenanceTimer?: NodeJS.Timeout;
 
   private restartSignal = new Deferred<RestartReason>();
   private restartRequested = false;
@@ -39,8 +41,19 @@ class HealthMonitor {
   private consecutiveBleFailures = 0;
   private lastBleError?: BleErrorSnapshot;
 
+  private lastCommandAt?: number;
+  private lastCommandDeviceName?: string;
+  private lastCommandName?: string;
+
   // If we see repeated retryable BLE/socket errors, request a reconnect.
   private readonly bleFailureTripCount = 3;
+
+  // Maintenance reconnect policy (project memory):
+  // Some BLE stacks degrade over long uptimes even if the device is used infrequently.
+  // A controlled reconnect after a long idle period is a common industrial uptime strategy.
+  private readonly maintenanceCheckIntervalMs = 5 * 60_000; // 5 minutes
+  private readonly maintenanceIdleMs = 12 * 60 * 60_000; // 12 hours since last command
+  private readonly maintenanceMinUptimeMs = 30 * 60_000; // don't thrash immediately after startup
 
   init(mqtt: IMQTTConnection, type: string) {
     this.mqtt = mqtt;
@@ -51,6 +64,9 @@ class HealthMonitor {
     this.lastBleSuccessAt = undefined;
     this.consecutiveBleFailures = 0;
     this.lastBleError = undefined;
+    this.lastCommandAt = undefined;
+    this.lastCommandDeviceName = undefined;
+    this.lastCommandName = undefined;
     this.resetRestartSignal();
 
     // Heartbeat every 30s
@@ -58,6 +74,11 @@ class HealthMonitor {
     this.heartbeatTimer = setInterval(() => this.publishHeartbeat(), 30_000);
     // Publish one immediately
     this.publishHeartbeat();
+    this.publishDegradedState();
+
+    // Maintenance check
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = setInterval(() => this.maybeRequestMaintenanceRestart(), this.maintenanceCheckIntervalMs);
 
     logInfo(`[Health] Initialized for type=${type}`);
   }
@@ -82,7 +103,7 @@ class HealthMonitor {
     this.restartReason = reason;
 
     const msg =
-      reason.kind === 'manual'
+      reason.kind === 'manual' || reason.kind === 'maintenance'
         ? reason.reason
         : `${reason.reason}${reason.deviceName ? ` (device=${reason.deviceName})` : ''}${
             reason.error ? `: ${reason.error}` : ''
@@ -100,6 +121,7 @@ class HealthMonitor {
     this.lastBleError = undefined;
 
     this.publishDeviceHealth(deviceName);
+    this.publishDegradedState();
   }
 
   recordBleFailure(deviceName: string, error: any) {
@@ -130,6 +152,33 @@ class HealthMonitor {
 
     this.publishDeviceHealth(deviceName);
     this.publishHeartbeat();
+    this.publishDegradedState();
+  }
+
+  /**
+   * Record that we attempted to execute a command.
+   *
+   * Project memory:
+   * - We use this for idle-based "maintenance reconnect" decisions.
+   * - This is NOT a guarantee the bed moved; it's a best-effort marker for operator visibility.
+   */
+  recordCommand(deviceName: string, commandName?: string) {
+    this.lastCommandAt = Date.now();
+    this.lastCommandDeviceName = deviceName;
+    this.lastCommandName = commandName;
+    this.publishHeartbeat();
+  }
+
+  private isDegraded(): boolean {
+    return this.consecutiveBleFailures > 0 || this.restartRequested;
+  }
+
+  private publishDegradedState() {
+    if (!this.mqtt) return;
+    this.mqtt.publish('smartbedmqtt/status/degraded', this.isDegraded() ? 'true' : 'false', {
+      qos: 1,
+      retain: true,
+    });
   }
 
   private publishHeartbeat() {
@@ -151,6 +200,12 @@ class HealthMonitor {
             }
           : null,
       },
+      commands: {
+        lastCommandAt: this.lastCommandAt ? Math.floor(this.lastCommandAt / 1000) : null,
+        lastCommandDeviceName: this.lastCommandDeviceName ?? null,
+        lastCommandName: this.lastCommandName ?? null,
+      },
+      degraded: this.isDegraded(),
       restart: this.restartReason ? this.restartReason : null,
     };
 
@@ -178,6 +233,20 @@ class HealthMonitor {
     };
 
     this.mqtt.publish(topic, payload);
+  }
+
+  private maybeRequestMaintenanceRestart() {
+    if (this.restartRequested) return;
+    if (!this.lastCommandAt) return;
+    const now = Date.now();
+    if (now - this.startedAt < this.maintenanceMinUptimeMs) return;
+    if (now - this.lastCommandAt < this.maintenanceIdleMs) return;
+
+    const idleHours = Math.floor((now - this.lastCommandAt) / (60 * 60_000));
+    this.requestRestart({
+      kind: 'maintenance',
+      reason: `Maintenance reconnect after ${idleHours}h idle`,
+    });
   }
 }
 

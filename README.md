@@ -46,6 +46,24 @@ An MQTT broker is required. The [Mosquitto official Add-On](https://github.com/h
 
 For BLE controlled beds a dedicated ESP32 running ESPHome's bluetooth proxy is required. Due to limitations in ESPHome, specifically since 2023.7 only one connection can use the bluetooth proxy of an ESP32 at a time, the BLE proxy will need to not be added (or disabled if already added) to HomeAssistant. Use the [ESPHome Ready-Made Projects](https://esphome.io/projects/?type=bluetooth) page to create an ESPHome bluetooth proxy and join it to your network.
 
+### Project note (this fork / this deployment)
+
+This setup **already uses a dedicated ESPHome BLE proxy** for SmartbedMQTT (e.g. `bleProxies[0].host = 10.0.0.111`). It is **not shared with Home Assistant's ESPHome integration**.
+
+When troubleshooting connection drops or intermittent command failures in this environment, treat “use a dedicated proxy” as **already satisfied** and focus on:
+
+- ESPHome native API stability (socket resets, auth/handshake reliability)
+- BLE scan silence / missing advertisements
+- GATT service discovery timeouts on the proxy (`BluetoothGATTGetServicesDoneResponse`-style timeouts)
+
+### Resilience features (this fork)
+
+- **Startup fingerprint**: logs `Forked By Yellowwood2002` plus a `[Build]` line with version/git SHA/build time so you can prove which build is running.
+- **MQTT availability**: retained `smartbedmqtt/status` topic (`online`/`offline`) with MQTT Last Will for crash detection.
+- **Degraded-mode telemetry**: retained `smartbedmqtt/status/degraded` topic so automations can react to repeated BLE failures.
+- **Per-device command serialization**: BLE writes are queued FIFO per controller instance to prevent overlapping GATT operations.
+- **Idle maintenance reconnect**: after long idle (default 12h), HealthMonitor can request a controlled reconnect to keep long-uptime BLE stacks healthy.
+
 # Sleeptracker AI Support (Cloud)
 
 ## Configuration
@@ -293,6 +311,22 @@ Support for this was only possible due to assistance from david_nagy, corne & PT
 ## Configuring
 
 You must specify at least one bleProxy as demonstrated in the config defaults. You also need to supply at least one Keeson controller with `name` and `friendlyName`.
+
+### Linked controllers (two MACs, one bed)
+
+Some Keeson/Purple beds expose two BLE controller MACs that can both control the same physical bed. Do **not** add two `keesonDevices` entries with the same `friendlyName` — Home Assistant entity `unique_id` is derived from `friendlyName`, so duplicates will collide.
+
+Instead, configure **one** `keesonDevices` entry and put the second identifier in `aliases` (comma/space separated). MACs may be provided with or without colons; both forms are normalized.
+
+Example:
+
+```
+keesonDevices:
+  - friendlyName: "Purple Bed"
+    name: "D2:A3:3C:41:A0:72"
+    aliases: "F0:1D:DF:BB:16:DE"
+    stayConnected: true
+```
 
 ## Current features include:
 

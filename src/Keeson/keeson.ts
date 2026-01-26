@@ -1,5 +1,4 @@
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
-import { buildDictionary } from '@utils/buildDictionary';
 import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { setupDeviceInfoSensor } from 'BLE/setupDeviceInfoSensor';
@@ -20,14 +19,81 @@ import { controllerBuilder as baseI4ControllerBuilder } from './BaseI4/controlle
 const checks = [isKSBTSupported, isBaseI5Supported, isBaseI4Supported];
 const controllerBuilders = [ksbtControllerBuilder, baseI5ControllerBuilder, baseI4ControllerBuilder];
 
+/**
+ * Normalize user-provided identifiers into stable match keys.
+ *
+ * Why:
+ * - Users commonly provide BLE MACs with colons (e.g. "D2:A3:..."), while ESPHome advertisements are
+ *   matched using a 12-hex lowercase string (e.g. "d2a33c41a072").
+ * - Some controllers advertise as "KSBT<hex>" while users configure just the hex, or vice-versa.
+ *
+ * How:
+ * - Keep the original lowercased token.
+ * - Additionally, if the token contains a 12-hex sequence, also add the extracted 12-hex form.
+ */
+const normalizeIdentifierKeys = (value: string): string[] => {
+  const token = (value ?? '').trim().toLowerCase();
+  if (!token) return [];
+
+  const keys = new Set<string>();
+  keys.add(token);
+
+  // Extract just hex characters; if it's exactly 12, treat it as a MAC without separators.
+  const hexOnly = token.replace(/[^0-9a-f]/g, '');
+  if (hexOnly.length === 12) keys.add(hexOnly);
+
+  // Also support cases where a prefix/suffix wraps the MAC-like portion (e.g. "ksbt04c0...").
+  const m = hexOnly.match(/[0-9a-f]{12}/);
+  if (m?.[0]) keys.add(m[0]);
+
+  return [...keys];
+};
+
+const expandDeviceIdentifiers = (device: any): string[] => {
+  const base = normalizeIdentifierKeys(device.name);
+  const aliasesRaw = (device.aliases ?? '') as string;
+  const aliasTokens = aliasesRaw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const aliases = aliasTokens.flatMap(normalizeIdentifierKeys);
+  return [...new Set([...base, ...aliases])];
+};
+
 const connectToDevice = async (
   mqtt: IMQTTConnection,
   bleDevice: IBLEDevice,
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice, stayConnected?: boolean) => Promise<any>
 ): Promise<void> => {
-  const { name, mac: _mac, address, connect, disconnect, getDeviceInfo } = bleDevice;
-  const deviceData = buildMQTTDeviceData({ ...device, address }, 'Keeson');
+  const { name, mac: _mac, connect, disconnect, getDeviceInfo } = bleDevice;
+  /**
+   * Stable identity (project memory):
+   *
+   * Why:
+   * - Some beds expose multiple linked BLE controllers (two MACs / two KSBT names) that can both control the bed.
+   * - If we use the *current* BLE address for MQTT discovery topics, HA may see duplicated discovery configs
+   *   over time as the add-on "chooses" the other controller after a reconnect.
+   *
+   * How:
+   * - Derive a stable ID from the configured `device.name` (prefer 12-hex MAC without separators, else the token).
+   * - Publish HA discovery under that stable topic, but still keep the *runtime* BLE numeric address attached
+   *   to the controller for actual BLE operations.
+   */
+  const configuredKeys = expandDeviceIdentifiers(device);
+  const stableId =
+    configuredKeys.find((k) => k.replace(/[^0-9a-f]/g, '').length === 12) ??
+    (device.name ?? '').toString().trim().toLowerCase();
+  const deviceData = buildMQTTDeviceData(
+    {
+      ...device,
+      // Stable identifier for MQTT discovery topics (do NOT use runtime BLE address here).
+      address: stableId,
+      // HA device IDs: include stable id + all configured identifiers + runtime mac (best effort).
+      ids: [...new Set([stableId, ...configuredKeys, bleDevice.mac])],
+    },
+    'Keeson'
+  );
   const stayConnected = device.stayConnected ?? false;
 
   // CRITICAL: Use try/finally to ensure cleanup happens even on errors
@@ -122,10 +188,31 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
   const devices = getDevices();
   if (!devices.length) return logInfo('[Keeson] No devices configured');
 
-  const devicesMap = buildDictionary(devices, (device) => ({ key: device.name.toLowerCase(), value: device }));
+  /**
+   * Device mapping strategy (project memory):
+   *
+   * Why:
+   * - Entity unique_id is based on `friendlyName`, so configuring two entries for two linked MACs
+   *   will create duplicate entities and unstable behavior.
+   * - We therefore allow one "logical bed" config entry to match multiple BLE identifiers via `aliases`.
+   *
+   * How:
+   * - Build a dictionary of identifier -> device config, where identifier is normalized (colon MACs, KSBT prefixes, etc.).
+   * - Validate that no identifier maps to two different config entries.
+   */
+  const devicesMap: Record<string, any> = {};
+  for (const device of devices) {
+    for (const key of expandDeviceIdentifiers(device)) {
+      const existing = devicesMap[key];
+      if (existing && existing !== device) {
+        return logError(`[Keeson] Duplicate/overlapping identifier detected in configuration: ${key}`);
+      }
+      devicesMap[key] = device;
+    }
+  }
   const deviceNames = Object.keys(devicesMap);
 
-  if (deviceNames.length !== devices.length) return logError('[Keeson] Duplicate name detected in configuration');
+  // Note: `deviceNames.length` can be > `devices.length` because a single device can have aliases.
 
   /**
    * Discovery backoff (project memory)
@@ -166,33 +253,69 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
   );
   const setupPromises: Promise<void>[] = [];
 
+  /**
+   * Deduplicate multiple discovered controllers that map to the same logical bed.
+   *
+   * Why:
+   * - Your bed advertises two linked controllers (two MACs / two KSBT names) that can both control the bed.
+   * - If we set up both, we will publish duplicate HA entities for the same physical bed and create command races.
+   *
+   * How:
+   * - Group discovered BLE devices by the config entry they map to.
+   * - Select the "best" candidate for setup using RSSI (higher is better, e.g. -73 > -90).
+   * - Log which one we chose so failures are diagnosable.
+   */
+  const grouped = new Map<any, IBLEDevice[]>();
   for (const bleDevice of bleDevices) {
     const { name, mac } = bleDevice;
-    const device = devicesMap[mac] || devicesMap[name.toLowerCase()];
+    const macKeys = normalizeIdentifierKeys(mac);
+    const nameKeys = normalizeIdentifierKeys(name);
+    const device =
+      macKeys.map((k) => devicesMap[k]).find(Boolean) || nameKeys.map((k) => devicesMap[k]).find(Boolean);
 
     if (!device) {
       logInfo(`[Keeson] Device not found in configuration for MAC: ${mac} or Name: ${name}`);
       continue;
     }
-    
+    const list = grouped.get(device) ?? [];
+    list.push(bleDevice);
+    grouped.set(device, list);
+  }
+
+  for (const [device, candidates] of grouped.entries()) {
+    // Pick the strongest RSSI candidate; if RSSI missing, treat as very weak.
+    const sorted = [...candidates].sort((a, b) => (b.advertisement?.rssi ?? -999) - (a.advertisement?.rssi ?? -999));
+    const chosen = sorted[0];
+    const fallback = sorted[1];
+
+    if (fallback) {
+      logInfo(
+        `[Keeson] Multiple controllers discovered for '${device.friendlyName}'. Choosing ${chosen.name} (${chosen.mac}) rssi=${chosen.advertisement?.rssi}, ignoring ${fallback.name} (${fallback.mac}) rssi=${fallback.advertisement?.rssi}`
+      );
+    } else {
+      logInfo(
+        `[Keeson] Controller selected for '${device.friendlyName}': ${chosen.name} (${chosen.mac}) rssi=${chosen.advertisement?.rssi}`
+      );
+    }
+
     const controllerBuilder = checks
-      .map((check, index) => (check(bleDevice) ? controllerBuilders[index] : undefined))
+      .map((check, index) => (check(chosen) ? controllerBuilders[index] : undefined))
       .filter((check) => check)[0];
-      
+
     if (controllerBuilder === undefined) {
       const {
         advertisement: { manufacturerDataList, serviceUuidsList },
-      } = bleDevice;
+      } = chosen;
       logWarn(
         '[Keeson] Device not supported, please contact me on Discord',
-        name,
-        JSON.stringify({ name, address: bleDevice.address, manufacturerDataList, serviceUuidsList })
+        chosen.name,
+        JSON.stringify({ name: chosen.name, address: chosen.address, manufacturerDataList, serviceUuidsList })
       );
       continue;
     }
 
-    // Setup each device in parallel with retry logic
-    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, bleDevice, device, controllerBuilder));
+    // Setup each logical bed in parallel with retry logic
+    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, chosen, device, controllerBuilder));
   }
 
   // Wait for all devices to be set up (they will retry forever if needed)

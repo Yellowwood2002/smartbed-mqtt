@@ -31,17 +31,49 @@ export class ESPConnection implements IESPConnection {
   }
 
   async getBLEDevices(deviceNames: string[], nameMapper?: (name: string) => string): Promise<IBLEDevice[]> {
+    return await this.getBLEDevicesInternal(deviceNames, nameMapper, false);
+  }
+
+  /**
+   * Internal implementation that can "self-heal" a dead ESPHome subscription.
+   *
+   * Why:
+   * - When the ESPHome API socket is half-open or subscriptions silently stop delivering,
+   *   scanning will time out with **zero** advertisements seen. Retrying the scan in a loop
+   *   never recovers; a reconnect is required.
+   *
+   * How:
+   * - If a scan times out and we saw 0 advertisements from all proxies, force a reconnect
+   *   (once) and retry the scan.
+   */
+  private async getBLEDevicesInternal(
+    deviceNames: string[],
+    nameMapper?: (name: string) => string,
+    reconnectAttempted: boolean = false
+  ): Promise<IBLEDevice[]> {
     // Rate limit repetitive scan logs (device may be asleep/out of range).
-    const searchKey = `esphome:search:${deviceNames.map((d) => d.toLowerCase()).sort().join(',')}`;
-    logInfoDedup(searchKey, 60_000, `[ESPHome] Searching for device(s): ${deviceNames.join(', ')}`);
-    deviceNames = deviceNames.map((name) => name.toLowerCase());
+    const originalDeviceNames = [...deviceNames];
+    const searchKey = `esphome:search:${originalDeviceNames.map((d) => d.toLowerCase()).sort().join(',')}`;
+    logInfoDedup(searchKey, 60_000, `[ESPHome] Searching for device(s): ${originalDeviceNames.join(', ')}`);
+
+    // Work on a mutable normalized copy.
+    let remaining = originalDeviceNames.map((name) => name.toLowerCase());
     const bleDevices: IBLEDevice[] = [];
     const complete = new Deferred<void>();
     const timeoutMs = 30_000;
     const stop = Promise.race([complete.then(() => 'complete' as const), wait(timeoutMs).then(() => 'timeout' as const)]);
+
+    // Diagnostics: track whether the proxy delivered *any* advertisements during the scan window.
+    // This helps distinguish "bed not advertising" from "proxy/socket is dead".
+    let advertisementsSeen = 0;
+    const advertisementsSeenByHost: Record<string, number> = {};
+
     await this.discoverBLEDevices(
       (device) => {
         const { name, mac, advertisement, connection } = device;
+        advertisementsSeen += 1;
+        const host = connection.host || 'unknown';
+        advertisementsSeenByHost[host] = (advertisementsSeenByHost[host] || 0) + 1;
         const lowerName = name.toLowerCase();
         /**
          * Matching strategy (battle-tested for BLE proxy + consumer devices):
@@ -50,7 +82,7 @@ export class ESPConnection implements IESPConnection {
          * - We prefer exact matches, but allow safe derived matches (prefix/suffix vs mac) to avoid "can't find device"
          *   despite the proxy seeing it.
          */
-        const index = deviceNames.findIndex((deviceName) => {
+        const index = remaining.findIndex((deviceName) => {
           // Exact identifiers
           if (deviceName === mac) return true;
           if (deviceName === lowerName) return true;
@@ -62,22 +94,51 @@ export class ESPConnection implements IESPConnection {
         });
         if (index === -1) return;
 
-        deviceNames.splice(index, 1);
+        remaining.splice(index, 1);
         logInfo(`[ESPHome] Found device: ${name} (${mac})`);
         // IMPORTANT: only create BLEDevice instances for matched devices to avoid accumulating
         // EventEmitter listeners for every advertisement seen during scanning.
         bleDevices.push(new BLEDevice(name, advertisement, connection));
-        if (deviceNames.length) return;
+        if (remaining.length) return;
         complete.resolve();
       },
       stop.then(() => undefined),
       nameMapper
     );
     const stopReason = await stop;
-    if (deviceNames.length) {
+
+    // If the scan timed out AND we saw zero advertisements from all proxies, the most likely
+    // cause is an ESPHome API subscription/socket issue. Reconnect once and retry.
+    if (
+      stopReason === 'timeout' &&
+      !reconnectAttempted &&
+      this.connections.length > 0 &&
+      advertisementsSeen === 0
+    ) {
+      const diag = Object.entries(advertisementsSeenByHost)
+        .map(([host, count]) => `${host}=${count}`)
+        .join(', ');
+      logWarnDedup(
+        `esphome:scanSilent:${searchKey}`,
+        60_000,
+        `[ESPHome] Scan timed out with 0 advertisements seen. Reconnecting ESPHome proxy API and retrying once. (${diag || 'no hosts'})`
+      );
+      await this.reconnect();
+      return await this.getBLEDevicesInternal(originalDeviceNames, nameMapper, true);
+    }
+
+    if (remaining.length) {
       const suffix = stopReason === 'timeout' ? ` (timed out after ${timeoutMs / 1000}s)` : '';
-      const missKey = `esphome:miss:${deviceNames.sort().join(',')}`;
-      logWarnDedup(missKey, 60_000, `[ESPHome] Could not find address for device(s): ${deviceNames.join(', ')}${suffix}`);
+      const missKey = `esphome:miss:${remaining.sort().join(',')}`;
+      const proxyDiag =
+        advertisementsSeen > 0
+          ? ` (advertisementsSeen=${advertisementsSeen})`
+          : ' (advertisementsSeen=0; proxy may be disconnected or not scanning)';
+      logWarnDedup(
+        missKey,
+        60_000,
+        `[ESPHome] Could not find address for device(s): ${remaining.join(', ')}${suffix}${proxyDiag}`
+      );
     }
     return bleDevices;
   }

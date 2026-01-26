@@ -10,6 +10,8 @@ import { arrayEquals } from '@utils/arrayEquals';
 import { deepArrayEquals } from '@utils/deepArrayEquals';
 import { logError, logInfo } from '@utils/logger';
 import { healthMonitor } from 'Diagnostics/HealthMonitor';
+import { isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
+import { wait } from '@utils/wait';
 
 export class BLEController<TCommand> extends EventEmitter implements IEventSource, IController<TCommand> {
   cache: Dictionary<Object> = {};
@@ -20,6 +22,8 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
   private notifyValues: Dictionary<Uint8Array> = {};
   private disconnectTimeout?: NodeJS.Timeout;
   private lastCommands?: number[][];
+  private connectMutex: Promise<void> | null = null;
+  private commandQueue: Promise<void> = Promise.resolve();
 
   constructor(
     public deviceData: IDeviceData,
@@ -54,6 +58,62 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     }
   };
 
+  /**
+   * Determine whether an error is likely transient and worth a fast reconnect+retry.
+   *
+   * Real-world behavior (project memory):
+   * - ESPHome BLE proxy sometimes returns transient socket errors (ECONNRESET/timeout) even when the device is fine.
+   * - BLE GATT writes can fail if the controller dropped the connection between connect() and write().
+   * - Retrying once after a forced disconnect/reconnect is a common industrial pattern for flaky BLE links.
+   *
+   * Guardrails:
+   * - We only do a small bounded retry (1 reconnect+retry) to avoid “infinite retries per command”
+   *   which would make HA buttons feel unresponsive.
+   */
+  private isTransientBleError = (error: any): boolean => {
+    if (isSocketOrBLETimeoutError(error)) return true;
+    const msg = (error?.message || String(error)).toLowerCase();
+    return (
+      msg.includes('not connected') ||
+      msg.includes('disconnected') ||
+      msg.includes('gatt') ||
+      msg.includes('timeout') ||
+      msg.includes('busy') ||
+      msg.includes('reset')
+    );
+  };
+
+  private ensureConnected = async (): Promise<void> => {
+    if (this.connectMutex) return this.connectMutex;
+    this.connectMutex = (async () => {
+      await this.bleDevice.connect();
+    })();
+    try {
+      await this.connectMutex;
+    } finally {
+      this.connectMutex = null;
+    }
+  };
+
+  private ensureConnectedWithRetry = async (): Promise<void> => {
+    try {
+      await this.ensureConnected();
+      logInfo(`[BLE] Connected to device ${this.deviceData.device.name} for command execution`);
+      return;
+    } catch (error: any) {
+      logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
+      healthMonitor.recordBleFailure(this.deviceData.device.name, error);
+      // Force a clean disconnect and retry once for transient link issues.
+      if (!this.isTransientBleError(error)) throw error;
+      try {
+        await this.disconnect();
+      } catch {}
+      await wait(300);
+      await this.ensureConnected();
+      logInfo(`[BLE] Connected to device ${this.deviceData.device.name} after retry`);
+    }
+  };
+
   private write = async (command: number[]) => {
     if (this.disconnectTimeout) {
       clearTimeout(this.disconnectTimeout);
@@ -62,8 +122,35 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     try {
       await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
       logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name}`);
+      // Record last attempted command time for idle-based maintenance reconnect decisions.
+      healthMonitor.recordCommand(this.deviceData.device.name);
       healthMonitor.recordBleSuccess(this.deviceData.device.name);
     } catch (e) {
+      // Retry once after forced reconnect if this looks transient.
+      if (this.isTransientBleError(e)) {
+        logError(
+          `[BLE] Write failed for ${this.deviceData.device.name} (transient). Forcing reconnect and retrying once.`,
+          e
+        );
+        try {
+          await this.disconnect();
+        } catch {}
+        await wait(300);
+        try {
+          await this.ensureConnected();
+          await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
+          logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name} after retry`);
+          healthMonitor.recordCommand(this.deviceData.device.name);
+          healthMonitor.recordBleSuccess(this.deviceData.device.name);
+          // Schedule disconnect if we're not staying connected.
+          if (!this.stayConnected) this.disconnectTimeout = setTimeout(this.disconnect, 60_000);
+          return;
+        } catch (retryError) {
+          logError(`[BLE] Retry write failed for device ${this.deviceData.device.name}`, retryError);
+          healthMonitor.recordBleFailure(this.deviceData.device.name, retryError);
+          throw retryError;
+        }
+      }
       logError(`[BLE] Failed to write characteristic to device ${this.deviceData.device.name}`, e);
       healthMonitor.recordBleFailure(this.deviceData.device.name, e);
       throw e; // Re-throw so callers know the write failed
@@ -77,34 +164,46 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
     this.writeCommands([command], count, waitTime);
 
   writeCommands = async (commands: TCommand[], count: number = 1, waitTime?: number) => {
-    const commandList = commands.map(this.commandBuilder).filter((command) => command.length > 0);
-    if (commandList.length === 0) return;
+    /**
+     * Project memory (BLE hardening):
+     * Home Assistant can fire multiple service calls concurrently (button mashing, automation bursts).
+     * ESPHome BLE proxy / GATT stacks are sensitive to overlapping connect/write sequences.
+     *
+     * Strategy:
+     * - Serialize all command executions per controller instance via a FIFO promise queue.
+     * - This prevents overlapping writes and reduces "GATT busy / services timeout" flakiness.
+     */
+    const run = async () => {
+      const commandList = commands.map(this.commandBuilder).filter((command) => command.length > 0);
+      if (commandList.length === 0) return;
 
-    try {
-      await this.bleDevice.connect();
-      logInfo(`[BLE] Successfully connected to device ${this.deviceData.device.name} for command execution`);
-    } catch (error: any) {
-      logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
-      healthMonitor.recordBleFailure(this.deviceData.device.name, error);
-      throw error;
-    }
+      await this.ensureConnectedWithRetry();
 
-    const onTick =
-      commandList.length === 1 ? () => this.write(commandList[0]) : () => loopWithWait(commandList, this.write);
-    if (count === 1 && !waitTime) return await onTick();
+      const onTick =
+        commandList.length === 1 ? () => this.write(commandList[0]) : () => loopWithWait(commandList, this.write);
+      if (count === 1 && !waitTime) return await onTick();
 
-    if (this.timer && this.lastCommands) {
-      if (deepArrayEquals(commandList, this.lastCommands)) return void this.timer.extendCount(count);
-      await this.cancelCommands();
-    }
+      if (this.timer && this.lastCommands) {
+        if (deepArrayEquals(commandList, this.lastCommands)) return void this.timer.extendCount(count);
+        await this.cancelCommands();
+      }
 
-    this.lastCommands = commandList;
-    const onFinish = () => {
-      this.timer = undefined;
-      this.lastCommands = undefined;
+      this.lastCommands = commandList;
+      const onFinish = () => {
+        this.timer = undefined;
+        this.lastCommands = undefined;
+      };
+      this.timer = new Timer(onTick, count, waitTime, onFinish);
+      await this.timer.start();
     };
-    this.timer = new Timer(onTick, count, waitTime, onFinish);
-    await this.timer.start();
+
+    const op = this.commandQueue.then(run);
+    // Ensure the queue continues even if this operation fails.
+    this.commandQueue = op.then(
+      () => undefined,
+      () => undefined
+    );
+    return await op;
   };
 
   cancelCommands = async () => {

@@ -12,6 +12,11 @@ COPY src /smartbed-mqtt/src/
 COPY tsconfig.build.json /smartbed-mqtt/
 COPY tsconfig.json /smartbed-mqtt/
 
+# Bake a best-effort build fingerprint into the image.
+# This survives HA add-on rebuild/reinstall and makes it unambiguous what fork/commit is running.
+RUN (git rev-parse --short HEAD 2>/dev/null || echo "unknown") > /smartbed-mqtt/.gitsha
+RUN (date -u +"%Y-%m-%dT%H:%M:%SZ") > /smartbed-mqtt/.buildtime
+
 RUN yarn build:ci
 
 FROM node:18-alpine
@@ -35,6 +40,9 @@ RUN chmod a+x run.sh
 
 COPY --from=0 /smartbed-mqtt/node_modules /smartbed-mqtt/node_modules
 COPY --from=0 /smartbed-mqtt/dist/tsc/ /smartbed-mqtt/
+COPY --from=0 /smartbed-mqtt/package.json /smartbed-mqtt/package.json
+COPY --from=0 /smartbed-mqtt/.gitsha /smartbed-mqtt/.gitsha
+COPY --from=0 /smartbed-mqtt/.buildtime /smartbed-mqtt/.buildtime
 
 ENTRYPOINT [ "/smartbed-mqtt/run.sh" ]
 #ENTRYPOINT [ "node", "index.js" ]
@@ -42,5 +50,5 @@ LABEL \
     io.hass.name="Smartbed Integration via MQTT" \
     io.hass.description="Home Assistant Community Add-on for Smartbeds" \
     io.hass.type="addon" \
-    io.hass.version="1.1.22" \
+    io.hass.version="1.1.23" \
     maintainer="Richard Hopton <richard@thehoptons.com>"

@@ -30,11 +30,14 @@ export class MQTTConnection extends EventEmitter implements IMQTTConnection {
     this.setMaxListeners(0);
   }
 
-  publish(topic: string, message: any) {
+  publish(topic: string, message: any, options?: { qos?: 0 | 1 | 2; retain?: boolean }) {
     if (message instanceof Object) {
       message = JSON.stringify(message);
     }
-    this.client.publish(topic, message, { qos: 1 });
+    this.client.publish(topic, message, {
+      qos: options?.qos ?? 1,
+      retain: options?.retain ?? false,
+    });
   }
 
   subscribe(topic: string) {
