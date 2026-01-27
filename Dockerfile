@@ -16,6 +16,7 @@ COPY tsconfig.json /smartbed-mqtt/
 # This survives HA add-on rebuild/reinstall and makes it unambiguous what fork/commit is running.
 RUN (git rev-parse --short HEAD 2>/dev/null || echo "unknown") > /smartbed-mqtt/.gitsha
 RUN (date -u +"%Y-%m-%dT%H:%M:%SZ") > /smartbed-mqtt/.buildtime
+RUN node -p "require('./package.json').version" > /smartbed-mqtt/.version
 
 RUN yarn build:ci
 
@@ -40,9 +41,9 @@ RUN chmod a+x run.sh
 
 COPY --from=0 /smartbed-mqtt/node_modules /smartbed-mqtt/node_modules
 COPY --from=0 /smartbed-mqtt/dist/tsc/ /smartbed-mqtt/
-COPY --from=0 /smartbed-mqtt/package.json /smartbed-mqtt/package.json
 COPY --from=0 /smartbed-mqtt/.gitsha /smartbed-mqtt/.gitsha
 COPY --from=0 /smartbed-mqtt/.buildtime /smartbed-mqtt/.buildtime
+COPY --from=0 /smartbed-mqtt/.version /smartbed-mqtt/.version
 
 ENTRYPOINT [ "/smartbed-mqtt/run.sh" ]
 #ENTRYPOINT [ "node", "index.js" ]
