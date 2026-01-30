@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 RUN apk --no-cache add git
 
@@ -20,7 +20,7 @@ RUN node -p "require('./package.json').version" > /smartbed-mqtt/.version
 
 RUN yarn build:ci
 
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Add env
 ENV LANG C.UTF-8
