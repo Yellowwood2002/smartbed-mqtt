@@ -8,17 +8,21 @@ import { BLEAdvertisement } from './types/BLEAdvertisement';
 import { BLEDevice } from './types/BLEDevice';
 import { IBLEDevice } from './types/IBLEDevice';
 
+interface BLEProxy {
+  host: string;
+  port: number | undefined;
+  password: string | undefined;
+  encryptionKey: string | undefined;
+  expectedServerName: string | undefined;
+}
+
 export class ESPConnection implements IESPConnection {
-  constructor(private connections: Connection[]) {}
+  constructor(private connections: Connection[], private proxies: BLEProxy[]) {}
 
   async reconnect(): Promise<void> {
     this.disconnect();
     logInfo('[ESPHome] Reconnecting...');
-    this.connections = await Promise.all(
-      this.connections.map((connection) =>
-        connect(new Connection({ host: connection.host, port: connection.port, password: connection.password }))
-      )
-    );
+    this.connections = await Promise.all(this.proxies.map((proxy) => connect(new Connection(proxy))));
   }
 
   disconnect(): void {

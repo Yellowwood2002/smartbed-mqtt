@@ -25,7 +25,7 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
 
   const proxies = getProxies();
   if (proxies.length === 0) {
-    return new ESPConnection([]);
+    return new ESPConnection([], []);
   }
 
   // Use retryWithBackoff for each proxy connection
@@ -100,5 +100,5 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
     connections.push(connection);
   }
   
-  return new ESPConnection(connections);
+  return new ESPConnection(connections, proxies);
 };
