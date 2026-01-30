@@ -1,11 +1,23 @@
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+import pino from 'pino';
 
-const format = (level: LogLevel, message: any) => {
-  return `${level} [${new Date().toISOString()}] ${message}`;
-};
+const isProduction = process.env.NODE_ENV === 'production';
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: isProduction
+    ? undefined
+    : {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          ignore: 'pid,hostname',
+          translateTime: 'SYS:standard',
+        },
+      },
+});
 
 /**
- * Log de-dupe / rate limit (project memory)
+ * Log de-dupe / rate limit
  *
  * Why this exists:
  * - BLE discovery/connect failures can be persistent when a device is asleep or out of range.
@@ -25,13 +37,13 @@ const shouldLog = (key: string, windowMs: number) => {
 };
 
 export const logInfo = (message: any, ...optionalParams: any[]) => {
-  console.info(format('info', message), ...optionalParams);
+  logger.info(message, ...optionalParams);
 };
 export const logWarn = (message: any, ...optionalParams: any[]) => {
-  console.warn(format('warn', message), ...optionalParams);
+  logger.warn(message, ...optionalParams);
 };
 export const logError = (message: any, ...optionalParams: any[]) => {
-  console.error(format('error', message), ...optionalParams);
+  logger.error(message, ...optionalParams);
 };
 
 export const logInfoDedup = (key: string, windowMs: number, message: any, ...optionalParams: any[]) => {
@@ -42,3 +54,5 @@ export const logWarnDedup = (key: string, windowMs: number, message: any, ...opt
   if (!shouldLog(key, windowMs)) return;
   logWarn(message, ...optionalParams);
 };
+
+export default logger;

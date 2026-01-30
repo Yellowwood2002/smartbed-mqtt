@@ -64,6 +64,10 @@ When troubleshooting connection drops or intermittent command failures in this e
 - **Per-device command serialization**: BLE writes are queued FIFO per controller instance to prevent overlapping GATT operations.
 - **Idle maintenance reconnect**: after long idle (default 12h), HealthMonitor can request a controlled reconnect to keep long-uptime BLE stacks healthy.
 
+### State Management
+
+This application is designed to be stateless. It does not persist any device state to the file system. On startup, it queries the devices to get their current state. This means that after a restart of the add-on, the state of the devices in Home Assistant may be incorrect for a short period of time until the application has had a chance to query all the devices.
+
 # Sleeptracker AI Support (Cloud)
 
 ## Configuration
