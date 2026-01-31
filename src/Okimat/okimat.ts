@@ -11,6 +11,7 @@ import { setupLightEntities } from './setupLightEntities';
 import { setupPresetButtons } from './setupPresetButtons';
 import { supportedRemotes } from './supportedRemotes';
 import { setupMotorEntities } from './setupMotorEntities';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 
 const buildCommand = (command: number) => [0x4, 0x2, ...intToBytes(command)];
 
@@ -55,7 +56,9 @@ export const okimat = async (mqtt: IMQTTConnection, esphome: IESPConnection) => 
       bleDevice,
       writeCharacteristic.handle,
       buildCommand,
-      notifyHandles
+      notifyHandles,
+      false,
+      (bleDevice as BLEDevice).connection.host
     );
     logInfo('[Okimat] Setting up entities for device:', name);
     const deviceInfo = await getDeviceInfo();

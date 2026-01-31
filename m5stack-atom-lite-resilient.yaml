@@ -1,0 +1,104 @@
+substitutions:
+  name: m5stack-atom-lite-fdb45c
+  friendly_name: M5Stack Atom Lite BLE Proxy
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  project:
+    name: esphome.bluetooth-proxy
+    version: '1.0'
+
+esp32:
+  board: m5stack-atom
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "OgiEeHOP9yibDzwiJIhtOhJFaVu9KQk5uZFZJSRsThk="
+
+ota:
+
+wifi:
+  # Enable fallback hotspot (captive portal) in case of WiFi connection failure
+  ap:
+    ssid: "M5Stack Fallback AP"
+    password: "password"
+
+captive_portal:
+
+# Bluetooth Proxy
+esp32_ble_tracker:
+
+bluetooth_proxy:
+  active: true
+
+# Self-Healing and MQTT Communication
+mqtt:
+  broker: 10.0.0.1 # Replace with your MQTT broker IP
+  username: "mqtt-user" # Replace with your MQTT username
+  password: "mqtt-password" # Replace with your MQTT password
+  birth_message:
+    topic: "smartbed-mqtt/proxy/${name}/status"
+    payload: '{"state": "online"}'
+    retain: true
+  will_message:
+    topic: "smartbed-mqtt/proxy/${name}/status"
+    payload: '{"state": "offline"}'
+    retain: true
+  on_message:
+    - topic: "smartbed-mqtt/proxy/${name}/command"
+      then:
+        - if:
+            condition:
+              lambda: 'return x == "REBOOT";'
+            then:
+              - mqtt.publish:
+                  topic: "smartbed-mqtt/proxy/${name}/status"
+                  payload: '{"state": "rebooting"}'
+                  retain: true
+              - delay: 1s
+              - switch.turn_on: reboot_switch
+        - if:
+            condition:
+              lambda: 'return x == "RESCAN";'
+            then:
+              - logger.log: "RESCAN command received"
+              - ble_proxy.rescan
+
+# Sensors for health reporting
+sensor:
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    id: uptime_sensor
+  - platform: free_memory
+    name: "${friendly_name} Free Memory"
+    id: free_memory_sensor
+
+interval:
+  - interval: 60s
+    then:
+      - mqtt.publish_json:
+          topic: "smartbed-mqtt/proxy/${name}/status"
+          payload: |-
+            root["state"] = "online";
+            root["uptime"] = id(uptime_sensor).state;
+            root["free_memory"] = id(free_memory_sensor).state;
+            root["last_seen"] = id(homeassistant_time).now().to_c_str();
+          retain: true
+
+# Switch to trigger a reboot
+switch:
+  - platform: restart
+    name: "${friendly_name} Reboot"
+    id: reboot_switch
+
+# Time sensor for timestamps
+time:
+  - platform: homeassistant
+    id: homeassistant_time

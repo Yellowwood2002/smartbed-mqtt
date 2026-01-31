@@ -13,6 +13,7 @@ import { setupLightEntities } from './setupLightsEntities';
 import { setupMassageButtons } from './setupMassageButtons';
 import { setupMotorEntities } from './setupMotorEntities';
 import { setupPresetButtons } from './setupPresetButtons';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 
 export const linak = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
   const devices = getDevices();
@@ -76,7 +77,9 @@ export const linak = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
       bleDevice,
       characteristic.handle,
       (bytes: number[]) => bytes,
-      notifyHandles
+      notifyHandles,
+      false,
+      (bleDevice as BLEDevice).connection.host
     );
     logInfo('[Linak] Setting up entities for device:', name);
     setupLightEntities(mqtt, controller);

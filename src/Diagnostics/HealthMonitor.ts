@@ -4,6 +4,7 @@ import { Deferred } from '@utils/deferred';
 import { getUnixEpoch } from '@utils/getUnixEpoch';
 import { isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { logInfo, logWarn } from '@utils/logger';
+import { getRootOptions } from '@utils/options';
 
 type RestartReason =
   | { kind: 'manual'; reason: string }
@@ -44,6 +45,8 @@ class HealthMonitor {
   private lastCommandAt?: number;
   private lastCommandDeviceName?: string;
   private lastCommandName?: string;
+  
+  private proxyStatus = new Map<string, any>();
 
   // If we see repeated retryable BLE/socket errors, request a reconnect.
   private readonly bleFailureTripCount = 3;
@@ -79,6 +82,21 @@ class HealthMonitor {
     // Maintenance check
     if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
     this.maintenanceTimer = setInterval(() => this.maybeRequestMaintenanceRestart(), this.maintenanceCheckIntervalMs);
+    
+    const { bleProxies } = getRootOptions();
+    if (bleProxies) {
+      for (const proxy of bleProxies) {
+        const topic = `smartbed-mqtt/proxy/${proxy.host}/status`;
+        mqtt.subscribe(topic, (message) => {
+          try {
+            const status = JSON.parse(message.toString());
+            this.proxyStatus.set(proxy.host, status);
+          } catch (e) {
+            logWarn(`[Health] Error parsing proxy status for ${proxy.host}:`, e);
+          }
+        });
+      }
+    }
 
     logInfo(`[Health] Initialized for type=${type}`);
   }
@@ -124,7 +142,7 @@ class HealthMonitor {
     this.publishDegradedState();
   }
 
-  recordBleFailure(deviceName: string, error: any) {
+  recordBleFailure(deviceName: string, error: any, proxyHost?: string) {
     const message = error?.message || String(error);
     const retryable = isSocketOrBLETimeoutError(error);
 
@@ -138,12 +156,18 @@ class HealthMonitor {
     if (retryable) {
       this.consecutiveBleFailures += 1;
       if (this.consecutiveBleFailures >= this.bleFailureTripCount) {
-        this.requestRestart({
-          kind: 'ble',
-          reason: `Repeated BLE/socket failures (${this.consecutiveBleFailures})`,
-          deviceName,
-          error: message,
-        });
+        if (proxyHost) {
+          logWarn(`[Health] Requesting reboot of proxy ${proxyHost} due to repeated BLE failures.`);
+          this.requestProxyReboot(proxyHost);
+          this.consecutiveBleFailures = 0; // Reset after requesting reboot
+        } else {
+          this.requestRestart({
+            kind: 'ble',
+            reason: `Repeated BLE/socket failures (${this.consecutiveBleFailures})`,
+            deviceName,
+            error: message,
+          });
+        }
       }
     } else {
       // Non-retryable errors should not necessarily trigger restart logic
@@ -153,6 +177,12 @@ class HealthMonitor {
     this.publishDeviceHealth(deviceName);
     this.publishHeartbeat();
     this.publishDegradedState();
+  }
+
+  requestProxyReboot(proxyHost: string) {
+    if (!this.mqtt) return;
+    const topic = `smartbed-mqtt/proxy/${proxyHost}/command`;
+    this.mqtt.publish(topic, 'REBOOT');
   }
 
   /**
@@ -183,6 +213,7 @@ class HealthMonitor {
 
   private publishHeartbeat() {
     if (!this.mqtt) return;
+    const proxyStatus = Object.fromEntries(this.proxyStatus);
     const payload = {
       type: this.type,
       ts: getUnixEpoch(),
@@ -205,6 +236,7 @@ class HealthMonitor {
         lastCommandDeviceName: this.lastCommandDeviceName ?? null,
         lastCommandName: this.lastCommandName ?? null,
       },
+      proxyStatus,
       degraded: this.isDegraded(),
       restart: this.restartReason ? this.restartReason : null,
     };

@@ -13,6 +13,7 @@ import { getDevices } from './options';
 import { setupLightSwitch } from './setupLightSwitch';
 import { setupMotorEntities } from './setupMotorEntities';
 import { byte } from '@utils/byte';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 
 export type Command = {
   command: number[];
@@ -65,7 +66,9 @@ export const octo = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
       (command: number[] | Command) => buildComplexCommand(Array.isArray(command) ? { command: command } : command),
       {
         feedback: characteristic.handle,
-      }
+      },
+      false,
+      (bleDevice as BLEDevice).connection.host
     );
 
     const featureState = { hasLight: false, lightState: false, hasPin: false, pinLock: false };

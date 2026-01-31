@@ -1,5 +1,6 @@
 import { IDeviceData } from '@ha/IDeviceData';
 import { BLEController } from 'BLE/BLEController';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 
 export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLEDevice) => {
@@ -11,5 +12,13 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
   );
   if (!characteristic) return undefined;
 
-  return new BLEController(deviceData, bleDevice, characteristic.handle, (byte: number) => [byte]);
+  return new BLEController(
+    deviceData,
+    bleDevice,
+    characteristic.handle,
+    (byte: number) => [byte],
+    {},
+    false,
+    (bleDevice as BLEDevice).connection.host
+  );
 };

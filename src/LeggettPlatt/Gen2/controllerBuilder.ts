@@ -2,6 +2,7 @@ import { IDeviceData } from '@ha/IDeviceData';
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { logInfo } from '@utils/logger';
 import { BLEController } from 'BLE/BLEController';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 import { setupDebugEntities } from './setupDebugEntities';
 import { setupLightEntities } from './setupLightEntities';
@@ -29,7 +30,9 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
     bleDevice,
     writeCharacteristic.handle,
     (bytes: number[]) => bytes,
-    notifyHandles
+    notifyHandles,
+    false,
+    (bleDevice as BLEDevice).connection.host
   );
 
   logInfo('[LeggettPlatt] Setting up entities for LP Gen2 device:', name);

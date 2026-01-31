@@ -9,6 +9,7 @@ import { buildCommands } from './CommandBuilder';
 import { getDevices } from './options';
 import { setupCoverEntities } from './setupCoverEntities';
 import { setupButtonEntities } from './setupButtonEntities';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 
 export const motosleep = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
   const devices = getDevices();
@@ -41,7 +42,8 @@ export const motosleep = async (mqtt: IMQTTConnection, esphome: IESPConnection) 
       characteristic.handle,
       (bytes: number[]) => bytes,
       {},
-      device.stayConnected
+      device.stayConnected,
+      (bleDevice as BLEDevice).connection.host
     );
     logInfo('[MotoSleep] Setting up entities for device:', name);
     const { simpleCommands, complexCommands } = buildCommands(name);

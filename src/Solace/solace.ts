@@ -8,6 +8,7 @@ import { IESPConnection } from 'ESPHome/IESPConnection';
 import { getDevices } from './options';
 import { setupPresetButtons } from './setupPresetButtons';
 import { setupMotorEntities } from './setupMotorEntities';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 
 const nameMapper = (name: string) =>
   name.replace(':', 'A').replace(';', 'B').replace('<', 'C').replace('=', 'D').replace('>', 'E').replace('?', 'F');
@@ -44,7 +45,8 @@ export const solace = async (mqtt: IMQTTConnection, esphome: IESPConnection) => 
       characteristic.handle,
       (bytes: number[]) => bytes,
       {},
-      true
+      true,
+      (bleDevice as BLEDevice).connection.host
     );
     logInfo('[Solace] Setting up entities for device:', name);
     setupPresetButtons(mqtt, controller);

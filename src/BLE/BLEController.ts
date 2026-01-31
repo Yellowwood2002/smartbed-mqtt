@@ -25,141 +25,141 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
   private connectMutex: Promise<void> | null = null;
   private commandQueue: Promise<void> = Promise.resolve();
 
-  constructor(
-    public deviceData: IDeviceData,
-    private bleDevice: IBLEDevice,
-    private handle: number,
-    private commandBuilder: (command: TCommand) => number[],
-    private notifyHandles: Dictionary<number> = {},
-    private stayConnected: boolean = false
-  ) {
-    super();
-    Object.entries(notifyHandles).forEach(([key, handle]) => {
-      this.stayConnected ||= true;
-      void this.bleDevice.subscribeToCharacteristic(handle, (data) => {
-        const previous = this.notifyValues[key];
-        if (previous && arrayEquals(data, previous)) return;
-        this.emit(key, data);
+    constructor(
+      public deviceData: IDeviceData,
+      private bleDevice: IBLEDevice,
+      private handle: number,
+      private commandBuilder: (command: TCommand) => number[],
+      private notifyHandles: Dictionary<number> = {},
+      private stayConnected: boolean = false,
+      public proxyHost?: string
+    ) {
+      super();
+      Object.entries(notifyHandles).forEach(([key, handle]) => {
+        this.stayConnected ||= true;
+        void this.bleDevice.subscribeToCharacteristic(handle, (data) => {
+          const previous = this.notifyValues[key];
+          if (previous && arrayEquals(data, previous)) return;
+          this.emit(key, data);
+        });
       });
-    });
-  }
-
-  private disconnect = async () => {
-    try {
-      await this.bleDevice.disconnect();
-      logInfo(`[BLE] Successfully disconnected from device ${this.deviceData.device.name}`);
-    } catch (error: any) {
-      // Don't log as error - disconnect failures are often harmless (device already disconnected)
-      // Only log if it's not a "Not connected" error
-      const errorMessage = error?.message || String(error);
-      if (!errorMessage.includes('Not connected') && !errorMessage.includes('not connected')) {
-        logError(`[BLE] Error disconnecting from device ${this.deviceData.device.name}:`, errorMessage);
-      }
     }
-  };
-
-  /**
-   * Determine whether an error is likely transient and worth a fast reconnect+retry.
-   *
-   * Real-world behavior (project memory):
-   * - ESPHome BLE proxy sometimes returns transient socket errors (ECONNRESET/timeout) even when the device is fine.
-   * - BLE GATT writes can fail if the controller dropped the connection between connect() and write().
-   * - Retrying once after a forced disconnect/reconnect is a common industrial pattern for flaky BLE links.
-   *
-   * Guardrails:
-   * - We only do a small bounded retry (1 reconnect+retry) to avoid “infinite retries per command”
-   *   which would make HA buttons feel unresponsive.
-   */
-  private isTransientBleError = (error: any): boolean => {
-    if (isSocketOrBLETimeoutError(error)) return true;
-    const msg = (error?.message || String(error)).toLowerCase();
-    return (
-      msg.includes('not connected') ||
-      msg.includes('disconnected') ||
-      msg.includes('gatt') ||
-      msg.includes('timeout') ||
-      msg.includes('busy') ||
-      msg.includes('reset')
-    );
-  };
-
-  private ensureConnected = async (): Promise<void> => {
-    if (this.connectMutex) return this.connectMutex;
-    this.connectMutex = (async () => {
-      await this.bleDevice.connect();
-    })();
-    try {
-      await this.connectMutex;
-    } finally {
-      this.connectMutex = null;
-    }
-  };
-
-  private ensureConnectedWithRetry = async (): Promise<void> => {
-    try {
-      await this.ensureConnected();
-      logInfo(`[BLE] Connected to device ${this.deviceData.device.name} for command execution`);
-      return;
-    } catch (error: any) {
-      logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
-      healthMonitor.recordBleFailure(this.deviceData.device.name, error);
-      // Force a clean disconnect and retry once for transient link issues.
-      if (!this.isTransientBleError(error)) throw error;
+  
+    private disconnect = async () => {
       try {
-        await this.disconnect();
-      } catch {}
-      await wait(300);
-      await this.ensureConnected();
-      logInfo(`[BLE] Connected to device ${this.deviceData.device.name} after retry`);
-    }
-  };
-
-  private write = async (command: number[]) => {
-    if (this.disconnectTimeout) {
-      clearTimeout(this.disconnectTimeout);
-      this.disconnectTimeout = undefined;
-    }
-    try {
-      await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
-      logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name}`);
-      // Record last attempted command time for idle-based maintenance reconnect decisions.
-      healthMonitor.recordCommand(this.deviceData.device.name);
-      healthMonitor.recordBleSuccess(this.deviceData.device.name);
-    } catch (e) {
-      // Retry once after forced reconnect if this looks transient.
-      if (this.isTransientBleError(e)) {
-        logError(
-          `[BLE] Write failed for ${this.deviceData.device.name} (transient). Forcing reconnect and retrying once.`,
-          e
-        );
+        await this.bleDevice.disconnect();
+        logInfo(`[BLE] Successfully disconnected from device ${this.deviceData.device.name}`);
+      } catch (error: any) {
+        // Don't log as error - disconnect failures are often harmless (device already disconnected)
+        // Only log if it's not a "Not connected" error
+        const errorMessage = error?.message || String(error);
+        if (!errorMessage.includes('Not connected') && !errorMessage.includes('not connected')) {
+          logError(`[BLE] Error disconnecting from device ${this.deviceData.device.name}:`, errorMessage);
+        }
+      }
+    };
+  
+    /**
+     * Determine whether an error is likely transient and worth a fast reconnect+retry.
+     * 
+     * Real-world behavior (project memory):
+     * - ESPHome BLE proxy sometimes returns transient socket errors (ECONNRESET/timeout) even when the device is fine.
+     * - BLE GATT writes can fail if the controller dropped the connection between connect() and write().
+     * - Retrying once after a forced disconnect/reconnect is a common industrial pattern for flaky BLE links.
+     * 
+     * Guardrails:
+     * - We only do a small bounded retry (1 reconnect+retry) to avoid “infinite retries per command”
+     *   which would make HA buttons feel unresponsive.
+     */
+    private isTransientBleError = (error: any): boolean => {
+      if (isSocketOrBLETimeoutError(error)) return true;
+      const msg = (error?.message || String(error)).toLowerCase();
+      return (
+        msg.includes('not connected') ||
+        msg.includes('disconnected') ||
+        msg.includes('gatt') ||
+        msg.includes('timeout') ||
+        msg.includes('busy') ||
+        msg.includes('reset')
+      );
+    };
+  
+    private ensureConnected = async (): Promise<void> => {
+      if (this.connectMutex) return this.connectMutex;
+      this.connectMutex = (async () => {
+        await this.bleDevice.connect();
+      })();
+      try {
+        await this.connectMutex;
+      } finally {
+        this.connectMutex = null;
+      }
+    };
+  
+    private ensureConnectedWithRetry = async (): Promise<void> => {
+      try {
+        await this.ensureConnected();
+        logInfo(`[BLE] Connected to device ${this.deviceData.device.name} for command execution`);
+        return;
+      } catch (error: any) {
+        logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
+        healthMonitor.recordBleFailure(this.deviceData.device.name, error, this.proxyHost);
+        // Force a clean disconnect and retry once for transient link issues.
+        if (!this.isTransientBleError(error)) throw error;
         try {
           await this.disconnect();
         } catch {}
         await wait(300);
-        try {
-          await this.ensureConnected();
-          await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
-          logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name} after retry`);
-          healthMonitor.recordCommand(this.deviceData.device.name);
-          healthMonitor.recordBleSuccess(this.deviceData.device.name);
-          // Schedule disconnect if we're not staying connected.
-          if (!this.stayConnected) this.disconnectTimeout = setTimeout(this.disconnect, 60_000);
-          return;
-        } catch (retryError) {
-          logError(`[BLE] Retry write failed for device ${this.deviceData.device.name}`, retryError);
-          healthMonitor.recordBleFailure(this.deviceData.device.name, retryError);
-          throw retryError;
-        }
+        await this.ensureConnected();
+        logInfo(`[BLE] Connected to device ${this.deviceData.device.name} after retry`);
       }
-      logError(`[BLE] Failed to write characteristic to device ${this.deviceData.device.name}`, e);
-      healthMonitor.recordBleFailure(this.deviceData.device.name, e);
-      throw e; // Re-throw so callers know the write failed
-    }
-    if (this.stayConnected) return;
-
-    this.disconnectTimeout = setTimeout(this.disconnect, 60_000);
-  };
-
+    };
+  
+    private write = async (command: number[]) => {
+      if (this.disconnectTimeout) {
+        clearTimeout(this.disconnectTimeout);
+        this.disconnectTimeout = undefined;
+      }
+      try {
+        await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
+        logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name}`);
+        // Record last attempted command time for idle-based maintenance reconnect decisions.
+        healthMonitor.recordCommand(this.deviceData.device.name);
+        healthMonitor.recordBleSuccess(this.deviceData.device.name);
+      } catch (e) {
+        // Retry once after forced reconnect if this looks transient.
+        if (this.isTransientBleError(e)) {
+          logError(
+            `[BLE] Write failed for ${this.deviceData.device.name} (transient). Forcing reconnect and retrying once.`,
+            e
+          );
+          try {
+            await this.disconnect();
+          } catch {}
+          await wait(300);
+          try {
+            await this.ensureConnected();
+            await this.bleDevice.writeCharacteristic(this.handle, new Uint8Array(command));
+            logInfo(`[BLE] Successfully wrote command to device ${this.deviceData.device.name} after retry`);
+            healthMonitor.recordCommand(this.deviceData.device.name);
+            healthMonitor.recordBleSuccess(this.deviceData.device.name);
+            // Schedule disconnect if we're not staying connected.
+            if (!this.stayConnected) this.disconnectTimeout = setTimeout(this.disconnect, 60_000);
+            return;
+          } catch (retryError) {
+            logError(`[BLE] Retry write failed for device ${this.deviceData.device.name}`, retryError);
+            healthMonitor.recordBleFailure(this.deviceData.device.name, retryError, this.proxyHost);
+            throw retryError;
+          }
+        }
+        logError(`[BLE] Failed to write characteristic to device ${this.deviceData.device.name}`, e);
+        healthMonitor.recordBleFailure(this.deviceData.device.name, e, this.proxyHost);
+        throw e; // Re-throw so callers know the write failed
+      }
+      if (this.stayConnected) return;
+  
+      this.disconnectTimeout = setTimeout(this.disconnect, 60_000);
+    };
   writeCommand = (command: TCommand, count: number = 1, waitTime?: number) =>
     this.writeCommands([command], count, waitTime);
 

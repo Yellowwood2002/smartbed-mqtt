@@ -3,6 +3,7 @@ import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { intToBytes } from '@utils/intToBytes';
 import { logInfo } from '@utils/logger';
 import { BLEController } from 'BLE/BLEController';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 import { setupLightEntities } from './setupLightEntities';
 import { setupMassageEntities } from './setupMassageEntities';
@@ -21,7 +22,15 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
   );
   if (!characteristic) return undefined;
 
-  const controller = new BLEController(deviceData, bleDevice, characteristic.handle, buildCommand);
+  const controller = new BLEController(
+    deviceData,
+    bleDevice,
+    characteristic.handle,
+    buildCommand,
+    {},
+    false,
+    (bleDevice as BLEDevice).connection.host
+  );
 
   logInfo('[LeggettPlatt] Setting up entities for LP Okin device:', name);
   setupPresetButtons(mqtt, controller);

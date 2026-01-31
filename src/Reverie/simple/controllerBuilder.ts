@@ -2,6 +2,7 @@ import { IDeviceData } from '@ha/IDeviceData';
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { logInfo } from '@utils/logger';
 import { BLEController } from 'BLE/BLEController';
+import { BLEDevice } from 'ESPHome/types/BLEDevice';
 import { IBLEDevice } from 'ESPHome/types/IBLEDevice';
 import { setupLightEntities } from './setupLightEntities';
 import { setupPresetButtons } from './setupPresetButtons';
@@ -21,9 +22,17 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
   if (!characteristic) return undefined;
 
   const { handle } = characteristic;
-  const controller = new BLEController(deviceData, bleDevice, handle, buildCommand, {
-    notify: handle,
-  });
+  const controller = new BLEController(
+    deviceData,
+    bleDevice,
+    handle,
+    buildCommand,
+    {
+      notify: handle,
+    },
+    false,
+    (bleDevice as BLEDevice).connection.host
+  );
   logInfo('[Reverie] Setting up entities for device:', name);
   setupPresetButtons(mqtt, controller);
   setupLightEntities(mqtt, controller);
