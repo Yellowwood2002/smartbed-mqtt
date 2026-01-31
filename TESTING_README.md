@@ -39,7 +39,18 @@ To test the new changes, you will need the following:
 9.  Click **"SAVE"**.
 10. Click **"INSTALL"**. You will be given the option to install wirelessly (OTA) or by connecting the device via USB. If this is the first time you are flashing the device, you will need to connect it via USB.
 
-### 3.2. Configuring the Add-on
+### 3.2. Keeping the Proxy Dedicated
+
+**CRITICAL STEP:** To ensure the BLE proxy remains dedicated to the `smartbed-mqtt` add-on, you **must not** add it as an integration in Home Assistant.
+
+1.  After you have successfully flashed the firmware, your Home Assistant instance will automatically discover the new ESPHome device on your network.
+2.  You will see a notification in **Settings > Devices & Services** asking you to configure the new device.
+3.  **DO NOT CLICK "CONFIGURE".**
+4.  You can either leave the notification there, or click the three dots on the notification and select **"Ignore"**.
+
+By ignoring this, you prevent Home Assistant from using the proxy for its own general Bluetooth needs, leaving it free and dedicated to providing a stable connection for the `smartbed-mqtt` add-on.
+
+### 3.3. Configuring the Add-on
 
 1.  Install the `smartbed-mqtt-fork` add-on in Home Assistant.
 2.  Configure the add-on with your bed's details.
