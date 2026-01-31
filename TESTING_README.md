@@ -21,15 +21,23 @@ To test the new changes, you will need the following:
 
 ### 3.1. Flashing the Firmware
 
-1.  Open the `m5stack-atom-lite-resilient.yaml` file.
-2.  **Customize the following fields:**
+**Important:** You do not upload the YAML file to the esphome.io website. You must use the ESPHome dashboard, which is an add-on inside your Home Assistant.
+
+1.  **Open Home Assistant.**
+2.  Go to **Settings** > **Add-ons**.
+3.  Open the **ESPHome** add-on. If you don't have it installed, you'll need to install it from the add-on store.
+4.  Inside the ESPHome dashboard, click the **"+ NEW DEVICE"** button in the bottom right.
+5.  A dialog will appear. Click on the three dots in the top right and select **"Manually create a new device"**.
+6.  Give your device a name (e.g., `smartbed-proxy`).
+7.  In the next step, you will be presented with a text editor. **Delete the default content and paste the content of the `m5stack-atom-lite-resilient.yaml` file.**
+8.  **Customize the following fields in the YAML:**
     *   `mqtt.broker`: The IP address or hostname of your MQTT broker.
     *   `mqtt.username`: Your MQTT username.
     *   `mqtt.password`: Your MQTT password.
     *   `wifi.ssid`: Your Wi-Fi network SSID.
     *   `wifi.password`: Your Wi-Fi network password.
-3.  Using the ESPHome dashboard in Home Assistant, create a new device and paste the content of the YAML file.
-4.  Install the firmware to your M5Stack Atom Lite.
+9.  Click **"SAVE"**.
+10. Click **"INSTALL"**. You will be given the option to install wirelessly (OTA) or by connecting the device via USB. If this is the first time you are flashing the device, you will need to connect it via USB.
 
 ### 3.2. Configuring the Add-on
 
