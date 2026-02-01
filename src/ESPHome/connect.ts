@@ -1,6 +1,16 @@
 import { Connection } from '@2colors/esphome-native-api';
 import { logError, logInfo, logWarn } from '@utils/logger';
 
+// === DIAGNOSTIC PROBE: Connection state tracking ===
+const logDiag = (tag: string, msg: string, data?: any) => {
+  const ts = new Date().toISOString();
+  if (data !== undefined) {
+    logInfo(`[DIAG:${tag}] ${ts} ${msg}`, JSON.stringify(data, null, 2));
+  } else {
+    logInfo(`[DIAG:${tag}] ${ts} ${msg}`);
+  }
+};
+
 /**
  * Establish an ESPHome native API connection robustly.
  *
@@ -32,7 +42,14 @@ export const connect = (connection: Connection) => {
       if (settled) return;
       settled = true;
       cleanup();
-      logError('[ESPHome] Failed Connecting:', error);
+      const errorMsg = error?.message || String(error);
+      const errorCode = error?.code || '';
+      const errorStack = error?.stack || '';
+      logError(`[ESPHome] Failed Connecting to ${connection.host}:`, {
+        message: errorMsg,
+        code: errorCode,
+        stack: errorStack.split('\n').slice(0, 3).join(' | ')
+      });
       reject(error);
     };
 

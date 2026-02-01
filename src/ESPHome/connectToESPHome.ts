@@ -25,7 +25,14 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
 
   const proxies = getProxies();
   if (proxies.length === 0) {
+    logInfo('[ESPHome] No BLE proxies configured in options.json');
     return new ESPConnection([], []);
+  }
+
+  // Log the proxy configuration for debugging
+  logInfo(`[ESPHome] Found ${proxies.length} proxy config(s):`);
+  for (const p of proxies) {
+    logInfo(`[ESPHome]   - host=${p.host} port=${p.port || 6053} expectedServerName=${p.expectedServerName || '(auto)'} hasEncryptionKey=${!!p.encryptionKey}`);
   }
 
   // Use retryWithBackoff for each proxy connection

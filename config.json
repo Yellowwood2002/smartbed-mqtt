@@ -1,6 +1,6 @@
 {
   "name": "Smartbed MQTT",
-  "version": "1.1.23",
+  "version": "1.1.24-local",
   "slug": "smartbed-mqtt",
   "description": "A Home Assistant add-on to enable controlling smart beds.",
   "url": "https://github.com/richardhopton/smartbed-mqtt",
@@ -44,10 +44,10 @@
     ],
     "bleProxies": [
       {
-        "host": "10.0.0.111",
+        "host": "10.0.0.69",
         "port": 6053,
         "encryptionKey": "OgiEeHOP9yibDzwiJIhtOhJFaVu9KQk5uZFZJSRsThk=",
-        "expectedServerName": "m5stack-atom-lite-fdb45c"
+        "expectedServerName": "esp32-wroom-ble-proxy"
       }
     ],
     "richmatDevices": [
