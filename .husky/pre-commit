@@ -1,4 +1,7 @@
 #!/bin/sh
 . "$(dirname "$0")/_/husky.sh"
 
-yarn lint-staged
+# This repo is built in Home Assistant add-ons where yarn may exist, but local dev machines
+# (and HA "mapped" /Volumes/config workflows) often only have node+npm installed.
+# Use npm here so commits don't fail with "yarn: command not found".
+npx --yes lint-staged

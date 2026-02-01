@@ -1,4 +1,3 @@
-// Build: 2026-02-01T13:30
 import { Connection } from '@2colors/esphome-native-api';
 import { logError, logInfo, logWarn } from '@utils/logger';
 

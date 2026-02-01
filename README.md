@@ -59,6 +59,7 @@ When troubleshooting connection drops or intermittent command failures in this e
 ### Resilience features (this fork)
 
 - **Startup fingerprint**: logs `Forked By Yellowwood2002` plus a `[Build]` line with version/git SHA/build time so you can prove which build is running.
+- **ESPHome 2026.1+ compatibility**: applies a small compatibility patch to `@2colors/esphome-native-api@1.3.1` (via `patch-package`) so encrypted ESPHome proxies don’t hang on the removed `ConnectRequest/ConnectResponse` password-auth step.
 - **MQTT availability**: retained `smartbedmqtt/status` topic (`online`/`offline`) with MQTT Last Will for crash detection.
 - **Degraded-mode telemetry**: retained `smartbedmqtt/status/degraded` topic so automations can react to repeated BLE failures.
 - **Per-device command serialization**: BLE writes are queued FIFO per controller instance to prevent overlapping GATT operations.
