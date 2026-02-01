@@ -118,3 +118,98 @@ index 7c2ef1b..78bf6b5 100644
          ).then(
              () => {
                  this.off('message.BluetoothGATTGetServicesResponse', onMessage);
+diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js
+index f9c2baf..dcbb2e6 100644
+--- a/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js
++++ b/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js
+@@ -34,10 +34,15 @@ class FrameHelper extends EventEmitter {
+     }
+ 
+     buildMessage(messageId, bytes) {
++        // ESPHome API evolves over time; newer firmwares may emit message IDs this client
++        // doesn't understand yet. Do not treat that as a fatal socket error — callers will
++        // safely skip unknown frames so the connection stays healthy.
++        const type = id_to_type[messageId];
++        if (!type || !pb[type]) return undefined;
+         try {
+-            return pb[id_to_type[messageId]].deserializeBinary(bytes);
+-        } catch(e) {
+-            this.emit('error', new Error(`Failed find message type for Id: ${messageId}`));
++            return pb[type].deserializeBinary(bytes);
++        } catch (e) {
++            return undefined;
+         }
+     }
+ }
+diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/messages.js b/node_modules/@2colors/esphome-native-api/lib/utils/messages.js
+index 734c0fc..2aca3f6 100644
+--- a/node_modules/@2colors/esphome-native-api/lib/utils/messages.js
++++ b/node_modules/@2colors/esphome-native-api/lib/utils/messages.js
+@@ -91,6 +91,9 @@ const id_to_type =
+     87: 'UnsubscribeBluetoothLEAdvertisementsRequest',
+     88: 'BluetoothDeviceClearCacheResponse',
+     93: 'BluetoothLERawAdvertisementsResponse',
++    // ESPHome 2026+ appears to emit raw BLE advertisements using a newer message id.
++    // Keep the legacy id (93) for backward compatibility, and also accept 126.
++    126: 'BluetoothLERawAdvertisementsResponse',
+     97: 'ListEntitiesTextResponse',
+     98: 'TextStateResponse',
+     99: 'TextCommandRequest'
+diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
+index a07678d..ed9f403 100644
+--- a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
++++ b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
+@@ -67,6 +67,10 @@ class NoiseFrameHelper extends FrameHelper {
+                         const message = this.deserialize(
+                             this.decryptor.DecryptWithAd([], frame)
+                         );
++                        if (message && message.__unknownMessageId != null) {
++                            this.emit("unknownMessage", message.__unknownMessageId);
++                            continue;
++                        }
+                         this.emit("message", message);
+                 }
+             }
+@@ -128,6 +132,13 @@ class NoiseFrameHelper extends FrameHelper {
+         const messageId = (buffer[0] << 8) | buffer[1];
+         const messageLength = (buffer[2] << 8) | buffer[3];
+         const message = this.buildMessage(messageId, buffer.subarray(4, messageLength + 4));
++        // Unknown/unhandled message IDs must be skipped safely (do not crash the stream parser).
++        if (!message) {
++            return {
++                __unknownMessageId: messageId,
++                length: messageLength + 4,
++            };
++        }
+         message.length = messageLength + 4;
+         return message;
+     }
+diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
+index 8bb8dfe..f4d2020 100644
+--- a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
++++ b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
+@@ -43,6 +43,13 @@ class PlaintextFrameHelper extends FrameHelper {
+             return null;
+ 
+         const message = this.buildMessage(messageId, buffer.subarray(offset, messageLength + offset));
++        // Unknown/unhandled message IDs must be skipped safely (do not crash the stream parser).
++        if (!message) {
++            return {
++                __unknownMessageId: messageId,
++                length: messageLength + offset,
++            };
++        }
+         message.length = messageLength + offset;
+         return message;
+     }
+@@ -54,6 +61,10 @@ class PlaintextFrameHelper extends FrameHelper {
+         try {
+             while ((message = this.deserialize(this.buffer))) {
+                 this.buffer = this.buffer.slice(message.length);
++                if (message.__unknownMessageId != null) {
++                    this.emit("unknownMessage", message.__unknownMessageId);
++                    continue;
++                }
+                 this.emit("message", message);
+             }
+         } catch (e) {
