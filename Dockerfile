@@ -4,6 +4,8 @@ RUN apk --no-cache add git
 
 COPY package.json /smartbed-mqtt/
 COPY yarn.lock /smartbed-mqtt/
+# patch-package needs patches/ present during install (postinstall runs during `yarn install`)
+COPY patches /smartbed-mqtt/patches/
 WORKDIR /smartbed-mqtt
 
 RUN yarn install
