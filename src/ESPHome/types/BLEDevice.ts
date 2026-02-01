@@ -35,6 +35,9 @@ export class BLEDevice implements IBLEDevice {
   public get address() {
     return this.advertisement.address;
   }
+  public get host(): string | undefined {
+    return this.connection.host;
+  }
   public get manufacturerDataList() {
     return this.advertisement.manufacturerDataList;
   }

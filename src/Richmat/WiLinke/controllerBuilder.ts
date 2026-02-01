@@ -20,7 +20,7 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
       buildCommand,
       {},
       false,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
   }
 

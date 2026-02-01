@@ -32,7 +32,7 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
     (bytes: number[]) => bytes,
     notifyHandles,
     false,
-    (bleDevice as BLEDevice).connection.host
+    (bleDevice as BLEDevice).host
   );
 
   logInfo('[LeggettPlatt] Setting up entities for LP Gen2 device:', name);

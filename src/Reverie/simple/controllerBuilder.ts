@@ -31,7 +31,7 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
       notify: handle,
     },
     false,
-    (bleDevice as BLEDevice).connection.host
+    (bleDevice as BLEDevice).host
   );
   logInfo('[Reverie] Setting up entities for device:', name);
   setupPresetButtons(mqtt, controller);

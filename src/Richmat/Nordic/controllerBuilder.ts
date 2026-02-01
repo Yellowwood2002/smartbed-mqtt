@@ -19,6 +19,6 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
     (byte: number) => [byte],
     {},
     false,
-    (bleDevice as BLEDevice).connection.host
+    (bleDevice as BLEDevice).host
   );
 };

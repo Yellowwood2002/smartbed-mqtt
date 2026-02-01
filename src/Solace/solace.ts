@@ -46,7 +46,7 @@ export const solace = async (mqtt: IMQTTConnection, esphome: IESPConnection) => 
       (bytes: number[]) => bytes,
       {},
       true,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
     logInfo('[Solace] Setting up entities for device:', name);
     setupPresetButtons(mqtt, controller);

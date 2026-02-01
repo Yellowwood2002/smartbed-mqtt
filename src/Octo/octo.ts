@@ -68,7 +68,7 @@ export const octo = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
         feedback: characteristic.handle,
       },
       false,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
 
     const featureState = { hasLight: false, lightState: false, hasPin: false, pinLock: false };

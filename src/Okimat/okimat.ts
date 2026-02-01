@@ -58,7 +58,7 @@ export const okimat = async (mqtt: IMQTTConnection, esphome: IESPConnection) => 
       buildCommand,
       notifyHandles,
       false,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
     logInfo('[Okimat] Setting up entities for device:', name);
     const deviceInfo = await getDeviceInfo();

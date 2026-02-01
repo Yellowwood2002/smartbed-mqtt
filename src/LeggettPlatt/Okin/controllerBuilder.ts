@@ -29,7 +29,7 @@ export const controllerBuilder = async (mqtt: IMQTTConnection, deviceData: IDevi
     buildCommand,
     {},
     false,
-    (bleDevice as BLEDevice).connection.host
+    (bleDevice as BLEDevice).host
   );
 
   logInfo('[LeggettPlatt] Setting up entities for LP Okin device:', name);

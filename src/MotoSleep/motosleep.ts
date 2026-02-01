@@ -43,7 +43,7 @@ export const motosleep = async (mqtt: IMQTTConnection, esphome: IESPConnection) 
       (bytes: number[]) => bytes,
       {},
       device.stayConnected,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
     logInfo('[MotoSleep] Setting up entities for device:', name);
     const { simpleCommands, complexCommands } = buildCommands(name);

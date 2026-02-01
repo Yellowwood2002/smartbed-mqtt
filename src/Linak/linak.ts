@@ -79,7 +79,7 @@ export const linak = async (mqtt: IMQTTConnection, esphome: IESPConnection) => {
       (bytes: number[]) => bytes,
       notifyHandles,
       false,
-      (bleDevice as BLEDevice).connection.host
+      (bleDevice as BLEDevice).host
     );
     logInfo('[Linak] Setting up entities for device:', name);
     setupLightEntities(mqtt, controller);
