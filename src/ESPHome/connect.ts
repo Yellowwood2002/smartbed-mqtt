@@ -1,15 +1,6 @@
+// Build: 2026-02-01T13:30
 import { Connection } from '@2colors/esphome-native-api';
 import { logError, logInfo, logWarn } from '@utils/logger';
-
-// === DIAGNOSTIC PROBE: Connection state tracking ===
-const logDiag = (tag: string, msg: string, data?: any) => {
-  const ts = new Date().toISOString();
-  if (data !== undefined) {
-    logInfo(`[DIAG:${tag}] ${ts} ${msg}`, JSON.stringify(data, null, 2));
-  } else {
-    logInfo(`[DIAG:${tag}] ${ts} ${msg}`);
-  }
-};
 
 /**
  * Establish an ESPHome native API connection robustly.
