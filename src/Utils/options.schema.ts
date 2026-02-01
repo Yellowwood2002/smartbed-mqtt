@@ -5,6 +5,9 @@ export const optionsSchema = z.object({
   mqtt_port: z.string(),
   mqtt_user: z.string(),
   mqtt_password: z.string(),
+  // Optional runtime log verbosity. This is plumbed via add-on config -> options.json -> env(LOG_LEVEL).
+  // It exists so we can switch to deep BLE/ESPHome forensics *without* rebuilding images.
+  log_level: z.enum(['trace', 'debug', 'info', 'warn', 'error']).optional(),
   type: z.enum([
     'scanner',
     'sleeptracker',

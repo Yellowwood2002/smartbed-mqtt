@@ -3,7 +3,7 @@ import { Dictionary } from '@utils/Dictionary';
 import { BLEAdvertisement } from './BLEAdvertisement';
 import { BLEDeviceInfo } from './BLEDeviceInfo';
 import { IBLEDevice } from './IBLEDevice';
-import { logInfo, logWarn } from '@utils/logger';
+import { logDebug, logInfo, logWarn } from '@utils/logger';
 
 // Static registry to track active BLEDevice instances by address+connection
 // This allows us to clean up old listeners when new instances are created
@@ -149,15 +149,48 @@ export class BLEDevice implements IBLEDevice {
 
   getServices = async () => {
     if (!this.servicesList) {
+      const startedAt = Date.now();
       try {
+        logDebug(
+          `[BLE] Requesting GATT services for ${this.name} (${this.mac}) via proxy=${this.connection.host} addressType=${this.advertisement.addressType}`
+        );
         const { servicesList } = await this.connection.listBluetoothGATTServicesService(this.address);
         this.servicesList = servicesList;
+        logDebug(
+          `[BLE] GATT services ready for ${this.name} (${this.mac}) in ${Date.now() - startedAt}ms (services=${servicesList.length})`
+        );
       } catch (error: any) {
         // Clear cache on error so we can retry
         this.servicesList = undefined;
         const errorMessage = error?.message || String(error);
         if (errorMessage.includes('timeout') || errorMessage.includes('BluetoothGATTGetServicesDoneResponse')) {
           logWarn(`[BLE] Timeout getting services for device ${this.name} (${this.mac}):`, errorMessage);
+          /**
+           * Recovery ladder (project memory):
+           * ESPHome proxies sometimes get "stuck" in a bad cached state for a given BLE device.
+           * When services discovery times out, try:
+           * - clear proxy cache for the device
+           * - reconnect without cache
+           * - retry services once
+           */
+          try {
+            logWarn(`[BLE] Clearing proxy cache and retrying services once for ${this.name} (${this.mac})`);
+            await (this.connection as any).clearBluetoothDeviceCacheService?.(this.address);
+            await this.disconnect();
+            await (this.connection as any).connectBluetoothDeviceServiceWithoutCache?.(
+              this.address,
+              this.advertisement.addressType
+            );
+            const { servicesList } = await this.connection.listBluetoothGATTServicesService(this.address);
+            this.servicesList = servicesList;
+            logInfo(
+              `[BLE] GATT services recovered after cache clear for ${this.name} (${this.mac}) (services=${servicesList.length})`
+            );
+            return this.servicesList;
+          } catch (recoveryError: any) {
+            const msg = recoveryError?.message || String(recoveryError);
+            logWarn(`[BLE] Services recovery failed for ${this.name} (${this.mac})`, msg);
+          }
           throw new Error(`BLE timeout: ${errorMessage}`);
         }
         throw error;

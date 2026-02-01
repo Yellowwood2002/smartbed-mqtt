@@ -43,6 +43,13 @@ export MQTTHOST=$(bashio::config "mqtt_host")
 export MQTTPORT=$(bashio::config "mqtt_port")
 export MQTTUSER=$(bashio::config "mqtt_user")
 export MQTTPASSWORD=$(bashio::config "mqtt_password")
+export LOG_LEVEL=$(bashio::config "log_level" 2>/dev/null || echo "")
+
+if [ -z "${LOG_LEVEL}" ] || [ "${LOG_LEVEL}" = "null" ]; then
+    # Default to info unless user explicitly opts into verbose logging.
+    LOG_LEVEL="info"
+fi
+echo "Using LOG_LEVEL: ${LOG_LEVEL}" | tee -a "${LOG_TEE_TARGETS[@]}"
 
 if [ $MQTTHOST = '<auto_detect>' ]; then
     if bashio::services.available 'mqtt'; then

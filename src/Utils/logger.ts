@@ -39,6 +39,9 @@ const shouldLog = (key: string, windowMs: number) => {
 export const logInfo = (message: any, ...optionalParams: any[]) => {
   logger.info(message, ...optionalParams);
 };
+export const logDebug = (message: any, ...optionalParams: any[]) => {
+  logger.debug(message, ...optionalParams);
+};
 export const logWarn = (message: any, ...optionalParams: any[]) => {
   logger.warn(message, ...optionalParams);
 };
@@ -49,6 +52,10 @@ export const logError = (message: any, ...optionalParams: any[]) => {
 export const logInfoDedup = (key: string, windowMs: number, message: any, ...optionalParams: any[]) => {
   if (!shouldLog(key, windowMs)) return;
   logInfo(message, ...optionalParams);
+};
+export const logDebugDedup = (key: string, windowMs: number, message: any, ...optionalParams: any[]) => {
+  if (!shouldLog(key, windowMs)) return;
+  logDebug(message, ...optionalParams);
 };
 export const logWarnDedup = (key: string, windowMs: number, message: any, ...optionalParams: any[]) => {
   if (!shouldLog(key, windowMs)) return;
