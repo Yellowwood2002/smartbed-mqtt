@@ -87,9 +87,10 @@ class HealthMonitor {
     if (bleProxies) {
       for (const proxy of bleProxies) {
         const topic = `smartbed-mqtt/proxy/${proxy.host}/status`;
-        mqtt.subscribe(topic, (message) => {
+        mqtt.subscribe(topic);
+        mqtt.on(topic, (message: string) => {
           try {
-            const status = JSON.parse(message.toString());
+            const status = JSON.parse(message);
             this.proxyStatus.set(proxy.host, status);
           } catch (e) {
             logWarn(`[Health] Error parsing proxy status for ${proxy.host}:`, e);
