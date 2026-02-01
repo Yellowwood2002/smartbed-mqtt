@@ -143,40 +143,67 @@ const connectToDevice = async (
   }
 };
 
+const isGattServicesTimeout = (error: any): boolean => {
+  const msg = (error?.message || String(error)).toLowerCase();
+  return msg.includes('gatt') && msg.includes('services') && msg.includes('timeout') ||
+    msg.includes('bluetoothgattgetservicesdoneresponse') ||
+    msg.includes('ble timeout');
+};
+
 const setupDeviceWithRetry = async (
   mqtt: IMQTTConnection,
   _esphome: IESPConnection,
-  initialBleDevice: IBLEDevice,
+  candidates: IBLEDevice[],
   device: any,
   controllerBuilder: (deviceData: any, bleDevice: IBLEDevice) => Promise<any>
 ): Promise<void> => {
-  const { name, mac } = initialBleDevice;
-  const bleDevice = initialBleDevice;
-  
-  // Use retryWithBackoff for centralized retry logic
-  // Infinite retries (maxRetries = undefined) for persistent connection attempts
+  const primary = candidates[0];
+  const bedName = device?.friendlyName ?? primary?.name ?? 'unknown';
+
+  /**
+   * Failover strategy (project memory):
+   * Some Keeson/Purple installations expose two linked controllers (two MACs) that can *both*
+   * control the same bed. In the field, one can be flakier than the other (RSSI, placement, firmware).
+   *
+   * If we get stuck in "Timeout getting services" for the chosen controller, try the other controller
+   * before backing off/retrying the whole setup loop. This reduces the need to restart the add-on.
+   */
   await retryWithBackoff(
     async () => {
-      // CRITICAL: Reuse the same device instance - don't refresh unnecessarily
-      // Refreshing creates new BLEDevice instances which adds more listeners
-      // The existing device instance can be reused for retries
-      
-      // Attempt connection - this will throw on failure, triggering retry
-      await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
-      
-      // Success - log and return
-      logInfo(`[Keeson] Successfully connected to device ${name} (${mac})`);
+      let lastError: any;
+      for (const bleDevice of candidates) {
+        const { name, mac } = bleDevice;
+        try {
+          await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
+          logInfo(`[Keeson] Successfully connected to '${bedName}' via ${name} (${mac})`);
+          return;
+        } catch (error: any) {
+          lastError = error;
+          const msg = error?.message || String(error);
+          // If this smells like a GATT/services timeout, try the next candidate controller immediately.
+          if (isGattServicesTimeout(error)) {
+            logWarn(`[Keeson] GATT/services timeout on ${name} (${mac}); trying next linked controller if available...`, msg);
+            continue;
+          }
+          // Other errors: still allow failover once (linked controllers can recover intermittent connect issues),
+          // but log it clearly so we can diagnose patterns.
+          logWarn(`[Keeson] Failed connecting via ${name} (${mac}); trying next linked controller if available...`, msg);
+        }
+      }
+      throw lastError ?? new Error(`Failed to connect to '${bedName}' (no candidates)`);
     },
     {
-      maxRetries: undefined, // Infinite retries
-      initialDelayMs: 5000, // 5 seconds initial delay
-      maxDelayMs: 30000, // Max 30 seconds between retries
-      backoffMultiplier: 1.5, // Gradual backoff
-      isRetryableError: isSocketOrBLETimeoutError,
+      maxRetries: undefined,
+      initialDelayMs: 5000,
+      maxDelayMs: 30000,
+      backoffMultiplier: 1.5,
+      // Keep retrying on socket/BLE transient errors. GATT/services timeouts are handled via failover above,
+      // but are still retryable at the outer layer too.
+      isRetryableError: (e: any) => isSocketOrBLETimeoutError(e) || isGattServicesTimeout(e),
       onRetry: (error: any, attempt: number, delayMs: number) => {
         const errorMessage = error?.message || String(error);
         logWarn(
-          `[Keeson] Connection attempt ${attempt} failed for device ${name} (${mac}), retrying in ${delayMs / 1000}s:`,
+          `[Keeson] Setup attempt ${attempt} failed for '${bedName}', retrying in ${delayMs / 1000}s:`,
           errorMessage
         );
       },
@@ -314,8 +341,8 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
       continue;
     }
 
-    // Setup each logical bed in parallel with retry logic
-    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, chosen, device, controllerBuilder));
+    // Setup each logical bed in parallel with retry logic + linked-controller failover
+    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, sorted, device, controllerBuilder));
   }
 
   // Wait for all devices to be set up (they will retry forever if needed)

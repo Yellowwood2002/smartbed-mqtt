@@ -86,7 +86,7 @@ export class ESPConnection implements IESPConnection {
          * - We prefer exact matches, but allow safe derived matches (prefix/suffix vs mac) to avoid "can't find device"
          *   despite the proxy seeing it.
          */
-        const index = remaining.findIndex((deviceName) => {
+        const matches = (deviceName: string) => {
           // Exact identifiers
           if (deviceName === mac) return true;
           if (deviceName === lowerName) return true;
@@ -95,10 +95,25 @@ export class ESPConnection implements IESPConnection {
           if (lowerName.endsWith(deviceName)) return true;
           if (deviceName.endsWith(mac)) return true;
           return false;
-        });
-        if (index === -1) return;
+        };
 
-        remaining.splice(index, 1);
+        /**
+         * Project memory:
+         * A single physical controller can match multiple configured identifiers:
+         * - aliases (multiple tokens)
+         * - colon-MAC vs 12-hex
+         * - KSBT prefix variants
+         *
+         * If we only remove the *first* match, discovery won't complete early and will
+         * wait for the full timeout, then emit a misleading "Could not find address..."
+         * warning even though we already found the device.
+         *
+         * Fix: remove *all* identifiers satisfied by this advertisement.
+         */
+        const before = remaining.length;
+        remaining = remaining.filter((deviceName) => !matches(deviceName));
+        if (remaining.length === before) return;
+
         logInfo(`[ESPHome] Found device: ${name} (${mac})`);
         // IMPORTANT: only create BLEDevice instances for matched devices to avoid accumulating
         // EventEmitter listeners for every advertisement seen during scanning.
