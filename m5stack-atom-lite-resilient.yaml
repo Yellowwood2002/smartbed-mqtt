@@ -8,6 +8,16 @@ esphome:
   project:
     name: esphome.bluetooth-proxy
     version: '1.0'
+  # FIX: Turn on the status LED at boot
+  on_boot:
+    priority: 600
+    then:
+      - light.turn_on:
+          id: status_led
+          effect: "Slow Pulse"
+          red: 0%
+          green: 100%
+          blue: 0%
 
 esp32:
   board: m5stack-atom
@@ -23,12 +33,19 @@ api:
     key: "OgiEeHOP9yibDzwiJIhtOhJFaVu9KQk5uZFZJSRsThk="
 
 ota:
+  - platform: esphome
+    password: "Worldcat230cc#"
 
 wifi:
-  # Enable fallback hotspot (captive portal) in case of WiFi connection failure
+  ssid: "NachoWiFi_IoT"
+  password: "alohomora-wifi"
+  power_save_mode: none
+  fast_connect: true
+  
+  # Fallback hotspot
   ap:
     ssid: "M5Stack Fallback AP"
-    password: "password"
+    password: "m5Pr0xy-F@llb4ck!2026"
 
 captive_portal:
 
@@ -40,9 +57,9 @@ bluetooth_proxy:
 
 # Self-Healing and MQTT Communication
 mqtt:
-  broker: 10.0.0.1 # Replace with your MQTT broker IP
-  username: "mqtt-user" # Replace with your MQTT username
-  password: "mqtt-password" # Replace with your MQTT password
+  broker: 10.0.0.92
+  username: "homeassistant"
+  password: "Ohbioz1kai5aishe6quaowil2hea6RaefohL2oozee0aezahd2ookookifayo5ie"
   birth_message:
     topic: "smartbed-mqtt/proxy/${name}/status"
     payload: '{"state": "online"}'
@@ -69,16 +86,21 @@ mqtt:
               lambda: 'return x == "RESCAN";'
             then:
               - logger.log: "RESCAN command received"
-              - ble_proxy.rescan
+              - esp32_ble_tracker.start_scan
+
+# Debug component
+debug:
+  update_interval: 60s
 
 # Sensors for health reporting
 sensor:
   - platform: uptime
     name: "${friendly_name} Uptime"
     id: uptime_sensor
-  - platform: free_memory
-    name: "${friendly_name} Free Memory"
-    id: free_memory_sensor
+  - platform: debug
+    free:
+      name: "${friendly_name} Free Memory"
+      id: free_memory_sensor
 
 interval:
   - interval: 60s
@@ -89,7 +111,7 @@ interval:
             root["state"] = "online";
             root["uptime"] = id(uptime_sensor).state;
             root["free_memory"] = id(free_memory_sensor).state;
-            root["last_seen"] = id(homeassistant_time).now().to_c_str();
+            root["last_seen"] = id(homeassistant_time).now().strftime("%Y-%m-%d %H:%M:%S").c_str();
           retain: true
 
 # Switch to trigger a reboot
@@ -102,3 +124,19 @@ switch:
 time:
   - platform: homeassistant
     id: homeassistant_time
+
+# FIX: Define the physical LED on the M5Stack Atom Lite
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: SK6812
+    pin: GPIO27
+    num_leds: 1
+    name: "Status LED"
+    id: status_led
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          update_interval: 2s
+          min_brightness: 1% # Must be lower than max to pulse effectively
+          max_brightness: 5% # Capped at 5% per request
