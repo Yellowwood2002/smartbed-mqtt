@@ -203,13 +203,26 @@ export class BLEDevice implements IBLEDevice {
     const service = await this.getService(serviceUuid);
 
     if (!service) {
-      writeLogs && logInfo('[BLE] Could not find expected service for device:', serviceUuid, this.name);
+      if (writeLogs) {
+        const services = await this.getServices().catch(() => undefined);
+        const uuids = services?.map((s) => s.uuid).filter(Boolean) ?? [];
+        const sample = uuids.slice(0, 8).join(', ');
+        logWarn(
+          `[BLE] Missing expected service on ${this.name} (${this.mac}) expected=${serviceUuid} ` +
+            `foundCount=${uuids.length}${sample ? ` foundSample=[${sample}]` : ''}`
+        );
+      }
       return undefined;
     }
 
     const characteristic = service?.characteristicsList?.find((c) => c.uuid === characteristicUuid);
     if (!characteristic) {
-      writeLogs && logInfo('[BLE] Could not find expected characteristic for device:', characteristicUuid, this.name);
+      writeLogs &&
+        logWarn(
+          `[BLE] Missing expected characteristic on ${this.name} (${this.mac}) ` +
+            `service=${serviceUuid} expectedChar=${characteristicUuid} ` +
+            `foundChars=${service?.characteristicsList?.length ?? 0}`
+        );
       return undefined;
     }
 

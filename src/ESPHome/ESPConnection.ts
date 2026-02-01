@@ -87,13 +87,31 @@ export class ESPConnection implements IESPConnection {
          *   despite the proxy seeing it.
          */
         const matches = (deviceName: string) => {
+          const dn = deviceName.toLowerCase().trim();
+          if (!dn) return false;
+
           // Exact identifiers
-          if (deviceName === mac) return true;
-          if (deviceName === lowerName) return true;
-          // Prefix/suffix tolerance (e.g. "ksbt<mac>" vs "<mac>")
-          if (lowerName.startsWith(deviceName)) return true;
-          if (lowerName.endsWith(deviceName)) return true;
-          if (deviceName.endsWith(mac)) return true;
+          if (dn === mac) return true;
+          if (dn === lowerName) return true;
+
+          // Normalize MAC-like tokens (e.g. "d2:a3:..." or "d2a33c...")
+          const dnMac = dn.replace(/[^a-f0-9]/g, '');
+          if (dnMac.length === 12 && dnMac === mac) return true;
+
+          // Prefix/suffix tolerance (e.g. "ksbt<...>" vs "<...>")
+          if (lowerName.startsWith(dn)) return true;
+          if (lowerName.endsWith(dn)) return true;
+          if (dn.endsWith(mac)) return true;
+
+          /**
+           * Project memory:
+           * Users often configure partial identifiers (aliases) like `b04c06002764`
+           * that are substrings of the advertised name `KSBT04C060027642`.
+           * Allow safe substring matching for reasonably-long tokens.
+           */
+          if (dn.length >= 6 && lowerName.includes(dn)) return true;
+          if (dn.length >= 7 && dn.startsWith('b') && lowerName.includes(dn.slice(1))) return true;
+
           return false;
         };
 

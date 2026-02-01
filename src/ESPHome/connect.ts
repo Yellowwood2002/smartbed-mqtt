@@ -1,5 +1,5 @@
 import { Connection } from '@2colors/esphome-native-api';
-import { logError, logInfo, logWarn } from '@utils/logger';
+import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 
 /**
  * Establish an ESPHome native API connection robustly.
@@ -34,12 +34,12 @@ export const connect = (connection: Connection) => {
       cleanup();
       const errorMsg = error?.message || String(error);
       const errorCode = error?.code || '';
-      const errorStack = error?.stack || '';
-      logError(`[ESPHome] Failed Connecting to ${connection.host}:`, {
-        message: errorMsg,
-        code: errorCode,
-        stack: errorStack.split('\n').slice(0, 3).join(' | ')
-      });
+      const errorStack = (error?.stack || '').split('\n').slice(0, 3).join(' | ');
+      logError(
+        `[ESPHome] Failed connecting to ${connection.host} (code=${errorCode || 'n/a'}): ${errorMsg}${
+          errorStack ? ` | ${errorStack}` : ''
+        }`
+      );
       reject(error);
     };
 
@@ -51,6 +51,7 @@ export const connect = (connection: Connection) => {
     const socketErrorHandler = (error: any) => {
       const errorMessage = error?.message || String(error);
       const errorCode = error?.code || '';
+      const key = `esphome:socket:${connection.host}:${errorCode || errorMessage}`;
       const isSocketError =
         errorCode === 'ECONNRESET' ||
         errorCode === 'ECONNREFUSED' ||
@@ -62,14 +63,13 @@ export const connect = (connection: Connection) => {
         errorMessage.toLowerCase().includes('reset') ||
         errorMessage.toLowerCase().includes('timeout');
 
-      if (isSocketError) {
-        logWarn(
-          `[ESPHome] Socket error on ${connection.host} (${errorCode || errorMessage})`,
-          errorMessage
-        );
-      } else {
-        logWarn(`[ESPHome] Connection error on ${connection.host}`, errorMessage);
-      }
+      logWarnDedup(
+        key,
+        2_000,
+        isSocketError
+          ? `[ESPHome] Socket error on ${connection.host} (code=${errorCode || 'n/a'}): ${errorMessage}`
+          : `[ESPHome] Connection error on ${connection.host} (code=${errorCode || 'n/a'}): ${errorMessage}`
+      );
       // Do not reject here; once connected, higher-level code decides when to reconnect.
     };
 
