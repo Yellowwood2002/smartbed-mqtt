@@ -168,7 +168,16 @@ const runWithSelfHealing = async (
       const delay = consecutiveFailures >= MAX_CONSECUTIVE_FAILURES 
         ? RETRY_DELAY_MS * 3  // 30 seconds for persistent failures
         : RETRY_DELAY_MS;
-      
+
+      // CRITICAL: Ensure we drop the ESPHome API connection before retrying.
+      // Otherwise we can end up with multiple overlapping BLE subscriptions, which ESPHome rejects:
+      // "Only one API subscription is allowed at a time".
+      try {
+        esphome?.disconnect?.();
+      } catch {}
+      // Give the proxy a moment to release the previous subscription/slot.
+      await wait(1000);
+
       await wait(delay);
       // Re-throw to trigger outer loop to reconnect MQTT/ESPHome
       throw error;
@@ -269,6 +278,11 @@ const start = async () => {
       } else {
         logWarn(`[Main] Error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
       }
+
+      // Best-effort cleanup before retrying: avoid overlapping ESPHome connections/subscriptions.
+      try {
+        esphome?.disconnect?.();
+      } catch {}
       
       await wait(RETRY_DELAY_MS);
       // Loop will retry

@@ -34,6 +34,11 @@ export class ESPConnection implements IESPConnection {
     logInfo('[ESPHome] Disconnecting...');
 
     for (const connection of this.connections) {
+      // Best-effort: tell proxy we're dropping the BLE advertisement subscription.
+      // Helps avoid "Only one API subscription is allowed at a time" during fast reconnect loops.
+      try {
+        connection.unsubscribeBluetoothAdvertisementService?.();
+      } catch {}
       connection.disconnect();
       connection.connected = false;
     }
