@@ -10,6 +10,11 @@ import { readFileSync, writeFileSync } from 'fs';
 // This allows us to clean up old listeners when new instances are created
 type DeviceKey = string;
 const deviceRegistry = new Map<DeviceKey, BLEDevice>();
+// Global connect mutex keyed by device+proxy.
+// We can end up with multiple BLEDevice instances for the same deviceKey during scan/retry loops,
+// and the per-instance mutex is not sufficient. Overlapping connects manifest as proxy logs like:
+// "Connection request ignored, state: IDLE/CONNECTING/ESTABLISHED" and ESP-IDF GATT_BUSY.
+const connectInFlightByDeviceKey = new Map<DeviceKey, Promise<void>>();
 
 type ConnectPreference = {
   // Prefer CONNECT_V3_WITHOUT_CACHE
@@ -85,7 +90,7 @@ export class BLEDevice implements IBLEDevice {
   private notifyDataListeners: Map<number, (message: any) => void> = new Map();
   private deviceKey: DeviceKey;
   
-  // Connection mutex to prevent simultaneous connection attempts
+  // Instance-local mutex (kept as a secondary guard; global mutex is primary)
   private connectingPromise: Promise<void> | null = null;
 
   public mac: string;
@@ -172,25 +177,49 @@ export class BLEDevice implements IBLEDevice {
   };
 
   connect = async () => {
-    // Connection mutex: if already connecting, return the existing promise
-    if (this.connectingPromise) {
-      return this.connectingPromise;
-    }
-    
-    // Create new connection promise
-    this.connectingPromise = (async () => {
+    // Global mutex first: avoid overlapping connects across BLEDevice instances
+    const globalInFlight = connectInFlightByDeviceKey.get(this.deviceKey);
+    if (globalInFlight) return globalInFlight;
+
+    // Instance mutex: if already connecting, return the existing promise
+    if (this.connectingPromise) return this.connectingPromise;
+
+    const connectPromise = (async () => {
       try {
         ensurePrefsLoaded();
         const advAddressType = this.advertisement.addressType;
         const pref = connectPrefsByDeviceKey.get(this.deviceKey) ?? {};
 
-        const connectOnce = async (withoutCache: boolean) => {
+        const withTimeout = async <T>(label: string, ms: number, fn: () => Promise<T>): Promise<T> => {
+          const startedAt = Date.now();
+          let timeoutHandle: NodeJS.Timeout | undefined;
+          try {
+            return await Promise.race([
+              fn(),
+              new Promise<T>((_resolve, reject) => {
+                timeoutHandle = setTimeout(() => {
+                  reject(new Error(`Timeout ${label} after ${ms}ms`));
+                }, ms);
+              }),
+            ]);
+          } finally {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            logDebug(`[BLE] Connect attempt ${label} finished in ${Date.now() - startedAt}ms`);
+          }
+        };
+
+        const connectOnce = async (withoutCache: boolean, label: string) => {
           // DO NOT omit addressType: the proxy log shows "Missing address type in connect request" and refuses.
           const addressType = advAddressType;
+          const ms = 12_000;
           if (withoutCache && typeof (this.connection as any).connectBluetoothDeviceServiceWithoutCache === 'function') {
-            return await (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType);
+            return await withTimeout(`${label}:without-cache`, ms, async () => {
+              return await (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType);
+            });
           }
-          return await this.connection.connectBluetoothDeviceService(this.address, addressType);
+          return await withTimeout(`${label}:with-cache`, ms, async () => {
+            return await this.connection.connectBluetoothDeviceService(this.address, addressType);
+          });
         };
 
         const attempts: Array<[boolean, string]> = [];
@@ -204,7 +233,7 @@ export class BLEDevice implements IBLEDevice {
         for (const [withoutCache, label] of attempts) {
           usedWithoutCache = withoutCache;
           try {
-            response = await connectOnce(withoutCache);
+            response = await connectOnce(withoutCache, label);
             if (response?.connected === true) break;
             lastError = new Error(
               `ESPHome proxy connect not connected (connected=${String(response?.connected)} error=${String(
@@ -213,6 +242,14 @@ export class BLEDevice implements IBLEDevice {
             );
           } catch (e) {
             lastError = e;
+            // Best-effort cleanup between attempts; helps when proxy gets stuck in an intermediate state.
+            try {
+              await this.connection.disconnectBluetoothDeviceService(this.address);
+            } catch {}
+            try {
+              await (this.connection as any).clearBluetoothDeviceCacheService?.(this.address);
+            } catch {}
+            await new Promise((r) => setTimeout(r, 250));
           }
         }
         if (!response?.connected) throw lastError ?? new Error('ESPHome proxy connect failed (no response)');
@@ -263,8 +300,15 @@ export class BLEDevice implements IBLEDevice {
         this.connectingPromise = null;
       }
     })();
-    
-    return this.connectingPromise;
+
+    this.connectingPromise = connectPromise;
+    connectInFlightByDeviceKey.set(this.deviceKey, connectPromise);
+    try {
+      return await connectPromise;
+    } finally {
+      const cur = connectInFlightByDeviceKey.get(this.deviceKey);
+      if (cur === connectPromise) connectInFlightByDeviceKey.delete(this.deviceKey);
+    }
   };
 
   disconnect = async () => {
