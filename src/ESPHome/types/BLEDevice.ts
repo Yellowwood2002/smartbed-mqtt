@@ -446,7 +446,10 @@ export class BLEDevice implements IBLEDevice {
           );
         }
 
-        if ((mtu ?? 0) === 0) {
+        // Only warn when proxy explicitly reports mtu=0 (ESP32 stack failure patterns).
+        // If MTU is undefined (e.g. we treated "state: ESTABLISHED" as already connected),
+        // do not warn.
+        if (typeof mtu === 'number' && mtu === 0) {
           logWarn(
             `[BLE] Proxy reported mtu=0 for ${this.name} (${this.mac}) — treating as suspicious (ESP32 status=133/0x100 patterns)`
           );

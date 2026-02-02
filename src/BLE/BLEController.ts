@@ -104,6 +104,21 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
       } catch (error: any) {
         logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
         healthMonitor.recordBleFailure(this.deviceData.device.name, error, this.proxyHost);
+
+        // If the ESPHome API socket is broken (e.g. ECONNRESET / write-after-end), a local reconnect loop
+        // is often not enough — we need to force the higher-level ESPHome reconnect.
+        const code = error?.code || '';
+        const msg = String(error?.message || error).toLowerCase();
+        if (code === 'ECONNRESET' || code === 'ERR_STREAM_WRITE_AFTER_END' || msg.includes('write after end')) {
+          healthMonitor.requestRestart({
+            kind: 'ble',
+            reason: 'ESPHome socket error during command execution (forcing reconnect)',
+            deviceName: this.deviceData.device.name,
+            error: `${code || 'socket'}: ${error?.message || String(error)}`,
+          });
+          throw error;
+        }
+
         // Force a clean disconnect and retry once for transient link issues.
         if (!this.isTransientBleError(error)) throw error;
         try {
