@@ -1,5 +1,5 @@
 diff --git a/node_modules/@2colors/esphome-native-api/lib/connection.js b/node_modules/@2colors/esphome-native-api/lib/connection.js
-index 7c2ef1b..78bf6b5 100644
+index 7c2ef1b..eeca34f 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/connection.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/connection.js
 @@ -6,6 +6,11 @@ const Package = require('../package.json');
@@ -14,7 +14,19 @@ index 7c2ef1b..78bf6b5 100644
  class EsphomeNativeApiConnection extends EventEmitter {
      constructor({
          port = 6053,
-@@ -57,8 +62,22 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -36,6 +41,11 @@ class EsphomeNativeApiConnection extends EventEmitter {
+             this.emit('message', type, mapped);
+         });
+ 
++        // Surface unknown/new message ids (non-fatal) so callers can diagnose protocol drift.
++        this.frameHelper.on('unknownMessage', (id) => {
++            this.emit('unknownMessage', id);
++        });
++
+         // frame helper close
+         this.frameHelper.on('close', () => {
+             this.connected = false;
+@@ -57,8 +67,22 @@ class EsphomeNativeApiConnection extends EventEmitter {
                  const helloResponse = await this.helloService(this.clientInfo);
                  this.supportsRawBLEAdvertisements = helloResponse.apiVersionMajor > 1 ||
                      (helloResponse.apiVersionMajor === 1 && helloResponse.apiVersionMinor >= 9);
@@ -39,7 +51,7 @@ index 7c2ef1b..78bf6b5 100644
                  this.authorized = true;
              } catch(e) {
                  this.emit('error', e);
-@@ -208,6 +227,10 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -208,6 +232,10 @@ class EsphomeNativeApiConnection extends EventEmitter {
          const message = new pb.HelloRequest();
  
          if (clientInfo !== undefined) message.setClientInfo(clientInfo);
@@ -50,7 +62,7 @@ index 7c2ef1b..78bf6b5 100644
  
          return await this.sendMessageAwaitResponse(message, 'HelloResponse');
      }
-@@ -341,7 +364,16 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -341,7 +369,16 @@ class EsphomeNativeApiConnection extends EventEmitter {
      async connectBluetoothDeviceService(address, addressType) {
          if (!this.connected) throw new Error(`Not connected`);
          if (!this.authorized) throw new Error(`Not authorized`);
@@ -68,7 +80,7 @@ index 7c2ef1b..78bf6b5 100644
          if(addressType != undefined) {
              message.setHasAddressType(true);
              message.setAddressType(addressType);
-@@ -352,6 +384,34 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -352,6 +389,34 @@ class EsphomeNativeApiConnection extends EventEmitter {
              10
          );
      }
@@ -103,8 +115,23 @@ index 7c2ef1b..78bf6b5 100644
      async disconnectBluetoothDeviceService(address) {
          if (!this.connected) throw new Error(`Not connected`);
          if (!this.authorized) throw new Error(`Not authorized`);
-@@ -403,7 +463,13 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -396,23 +461,43 @@ class EsphomeNativeApiConnection extends EventEmitter {
+         const message = new pb.BluetoothGATTGetServicesRequest([address]);
+ 
+         const servicesList = [];
++        let gattError = null;
+         const onMessage = (message) => {
+             if (message.address === address)
+                 servicesList.push(...message.servicesList);
+         };
++        const onError = (message) => {
++            if (message.address !== address) return;
++            // Some firmwares emit GATTErrorResponse and still send a DoneResponse.
++            // Capture it so callers don't proceed with an empty/invalid services list.
++            gattError = message;
++        };
          this.on('message.BluetoothGATTGetServicesResponse', onMessage);
++        this.on('message.BluetoothGATTErrorResponse', onError);
          await this.sendMessageAwaitResponse(
              message,
 -            'BluetoothGATTGetServicesDoneResponse'
@@ -118,6 +145,21 @@ index 7c2ef1b..78bf6b5 100644
          ).then(
              () => {
                  this.off('message.BluetoothGATTGetServicesResponse', onMessage);
++                this.off('message.BluetoothGATTErrorResponse', onError);
+             },
+             (e) => {
+                 this.off('message.BluetoothGATTGetServicesResponse', onMessage);
++                this.off('message.BluetoothGATTErrorResponse', onError);
+                 throw e;
+             }
+         );
++        if (gattError) {
++            const { handle, error } = gattError;
++            throw new Error(`BluetoothGATTErrorResponse address=${address} handle=${handle} error=${error}`);
++        }
+         return { address, servicesList };
+     }
+ 
 diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js
 index f9c2baf..dcbb2e6 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/utils/frameHelper.js

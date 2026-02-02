@@ -89,6 +89,13 @@ export const connect = (connection: Connection) => {
 
         // After the handshake is complete, attach persistent error logging.
         connection.on('error', socketErrorHandler);
+        connection.on('unknownMessage', (id: any) => {
+          logWarnDedup(
+            `esphome:unknownMessage:${connection.host}:${String(id)}`,
+            10_000,
+            `[ESPHome] Unknown message id from ${connection.host}: ${String(id)}`
+          );
+        });
         if ((connection as any).socket) {
           const socket = (connection as any).socket;
           socket.on('error', socketErrorHandler);
