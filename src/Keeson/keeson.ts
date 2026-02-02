@@ -1,5 +1,6 @@
 import { IMQTTConnection } from '@mqtt/IMQTTConnection';
-import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
+import { JsonSensor } from '@ha/JsonSensor';
+import { logDebug, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { setupDeviceInfoSensor } from 'BLE/setupDeviceInfoSensor';
 import { buildMQTTDeviceData } from 'Common/buildMQTTDeviceData';
@@ -15,9 +16,108 @@ import { isSupported as isBaseI5Supported } from './BaseI5/isSupported';
 import { controllerBuilder as baseI5ControllerBuilder } from './BaseI5/controllerBuilder';
 import { isSupported as isBaseI4Supported } from './BaseI4/isSupported';
 import { controllerBuilder as baseI4ControllerBuilder } from './BaseI4/controllerBuilder';
+import { readFileSync, writeFileSync } from 'fs';
 
 const checks = [isKSBTSupported, isBaseI5Supported, isBaseI4Supported];
 const controllerBuilders = [ksbtControllerBuilder, baseI5ControllerBuilder, baseI4ControllerBuilder];
+
+// Persist per-bed controller preference (success/failure based, not just RSSI).
+const CONTROLLER_PREFS_PATH = '/data/smartbedmqtt-keeson-controller-preferences.json';
+type ControllerStats = {
+  successes: number;
+  failures: number;
+  consecutiveFailures: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+};
+type ControllerPrefsFile = Record<string, Record<string, ControllerStats>>; // bedKey -> controllerKey -> stats
+let controllerPrefsLoaded = false;
+let controllerPrefs: ControllerPrefsFile = {};
+
+const ensureControllerPrefsLoaded = () => {
+  if (controllerPrefsLoaded) return;
+  controllerPrefsLoaded = true;
+  try {
+    const raw = readFileSync(CONTROLLER_PREFS_PATH, 'utf8');
+    const json = JSON.parse(raw);
+    if (json && typeof json === 'object') controllerPrefs = json as ControllerPrefsFile;
+    logDebug(`[Keeson] Loaded controller prefs from ${CONTROLLER_PREFS_PATH}`);
+  } catch {
+    // ok
+  }
+};
+
+const persistControllerPrefsNow = () => {
+  try {
+    writeFileSync(CONTROLLER_PREFS_PATH, JSON.stringify(controllerPrefs, null, 2), 'utf8');
+  } catch {
+    // ok
+  }
+};
+
+const controllerKeyFor = (macOrToken: string): string => {
+  // Prefer 12-hex stable MAC representation when possible
+  const keys = normalizeIdentifierKeys(macOrToken);
+  const mac12 = keys.find((k) => k.replace(/[^0-9a-f]/g, '').length === 12);
+  return (mac12 ?? keys[0] ?? macOrToken).replace(/[^0-9a-f]/g, '').toLowerCase() || String(macOrToken).toLowerCase();
+};
+
+const stableBedKeyFor = (device: any): string => {
+  const configuredKeys = expandDeviceIdentifiers(device);
+  return (
+    configuredKeys.find((k) => k.replace(/[^0-9a-f]/g, '').length === 12) ??
+    (device.name ?? '').toString().trim().toLowerCase()
+  );
+};
+
+const getControllerStats = (bedKey: string, controllerKey: string): ControllerStats => {
+  ensureControllerPrefsLoaded();
+  controllerPrefs[bedKey] = controllerPrefs[bedKey] || {};
+  controllerPrefs[bedKey][controllerKey] = controllerPrefs[bedKey][controllerKey] || {
+    successes: 0,
+    failures: 0,
+    consecutiveFailures: 0,
+  };
+  return controllerPrefs[bedKey][controllerKey];
+};
+
+const recordControllerSuccess = (bedKey: string, controllerMac: string) => {
+  const key = controllerKeyFor(controllerMac);
+  const stats = getControllerStats(bedKey, key);
+  stats.successes += 1;
+  stats.consecutiveFailures = 0;
+  stats.lastSuccessAt = Date.now();
+  persistControllerPrefsNow();
+};
+
+const recordControllerFailure = (bedKey: string, controllerMac: string, error: any) => {
+  const key = controllerKeyFor(controllerMac);
+  const stats = getControllerStats(bedKey, key);
+  stats.failures += 1;
+  stats.consecutiveFailures += 1;
+  stats.lastFailureAt = Date.now();
+  stats.lastError = (error?.message || String(error)).slice(0, 500);
+  persistControllerPrefsNow();
+};
+
+const scoreController = (bedKey: string, bleDevice: IBLEDevice): number => {
+  const rssi = bleDevice.advertisement?.rssi ?? -999;
+  const stats = getControllerStats(bedKey, controllerKeyFor(bleDevice.mac));
+  const now = Date.now();
+  let score = rssi;
+  // If it worked recently, strongly prefer it (RSSI is noisy).
+  if (stats.lastSuccessAt) {
+    const ageMs = now - stats.lastSuccessAt;
+    if (ageMs < 6 * 60 * 60 * 1000) score += 60;
+    else if (ageMs < 24 * 60 * 60 * 1000) score += 25;
+  }
+  // Penalize consecutive failures heavily.
+  if (stats.consecutiveFailures > 0) score -= Math.min(90, stats.consecutiveFailures * 30);
+  // Slight penalty if it's generally failing more than succeeding.
+  if (stats.failures > stats.successes + 2) score -= 15;
+  return score;
+};
 
 /**
  * Normalize user-provided identifiers into stable match keys.
@@ -159,6 +259,25 @@ const setupDeviceWithRetry = async (
 ): Promise<void> => {
   const primary = candidates[0];
   const bedName = device?.friendlyName ?? primary?.name ?? 'unknown';
+  const bedKey = stableBedKeyFor(device);
+
+  // Diagnostics sensor (HA entity_category=diagnostic)
+  const configuredKeys = expandDeviceIdentifiers(device);
+  const stableId = bedKey;
+  const deviceData = buildMQTTDeviceData(
+    {
+      ...device,
+      address: stableId,
+      ids: [...new Set([stableId, ...configuredKeys, primary?.mac].filter(Boolean))],
+    },
+    'Keeson'
+  );
+  const diag = new JsonSensor<any>(mqtt, deviceData, {
+    description: 'BLE Diagnostics',
+    category: 'diagnostic',
+    icon: 'mdi:bluetooth',
+    valueField: 'status',
+  });
 
   /**
    * Failover strategy (project memory):
@@ -174,12 +293,44 @@ const setupDeviceWithRetry = async (
       for (const bleDevice of candidates) {
         const { name, mac } = bleDevice;
         try {
+          diag.setState({
+            status: 'connecting',
+            bed: bedName,
+            bedKey,
+            attempting: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            order: candidates.map((c) => ({
+              name: c.name,
+              mac: c.mac,
+              rssi: c.advertisement?.rssi,
+              score: scoreController(bedKey, c),
+              stats: getControllerStats(bedKey, controllerKeyFor(c.mac)),
+            })),
+          });
           await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
           logInfo(`[Keeson] Successfully connected to '${bedName}' via ${name} (${mac})`);
+          recordControllerSuccess(bedKey, mac);
+          diag.setState({
+            status: 'connected',
+            bed: bedName,
+            bedKey,
+            connectedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            ble: (bleDevice as any).__bleDiag,
+            controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
+          });
           return;
         } catch (error: any) {
           lastError = error;
           const msg = error?.message || String(error);
+          recordControllerFailure(bedKey, mac, error);
+          diag.setState({
+            status: 'failed',
+            bed: bedName,
+            bedKey,
+            failedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            error: msg,
+            ble: (bleDevice as any).__bleDiag,
+            controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
+          });
           // If this smells like a GATT/services timeout, try the next candidate controller immediately.
           if (isGattServicesTimeout(error)) {
             logWarn(`[Keeson] GATT/services timeout on ${name} (${mac}); trying next linked controller if available...`, msg);
@@ -310,39 +461,54 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
   }
 
   for (const [device, candidates] of grouped.entries()) {
-    // Pick the strongest RSSI candidate; if RSSI missing, treat as very weak.
-    const sorted = [...candidates].sort((a, b) => (b.advertisement?.rssi ?? -999) - (a.advertisement?.rssi ?? -999));
+    const bedKey = stableBedKeyFor(device);
+    // Order candidates by success/failure history first, RSSI second.
+    const sorted = [...candidates].sort((a, b) => scoreController(bedKey, b) - scoreController(bedKey, a));
     const chosen = sorted[0];
     const fallback = sorted[1];
 
     if (fallback) {
       logInfo(
-        `[Keeson] Multiple controllers discovered for '${device.friendlyName}'. Choosing ${chosen.name} (${chosen.mac}) rssi=${chosen.advertisement?.rssi}, ignoring ${fallback.name} (${fallback.mac}) rssi=${fallback.advertisement?.rssi}`
+        `[Keeson] Multiple controllers discovered for '${device.friendlyName}'. Choosing ${chosen.name} (${chosen.mac}) ` +
+          `rssi=${chosen.advertisement?.rssi} score=${scoreController(bedKey, chosen)}; ` +
+          `next=${fallback.name} (${fallback.mac}) rssi=${fallback.advertisement?.rssi} score=${scoreController(
+            bedKey,
+            fallback
+          )}`
       );
     } else {
       logInfo(
-        `[Keeson] Controller selected for '${device.friendlyName}': ${chosen.name} (${chosen.mac}) rssi=${chosen.advertisement?.rssi}`
+        `[Keeson] Controller selected for '${device.friendlyName}': ${chosen.name} (${chosen.mac}) ` +
+          `rssi=${chosen.advertisement?.rssi} score=${scoreController(bedKey, chosen)}`
       );
     }
 
+    // Pick a controller builder based on the *first supported* candidate (sometimes the "chosen" MAC is asleep
+    // but the other linked controller is awake and still identifies the same model).
+    const supportedCandidate = sorted.find((c) => checks.some((check) => check(c))) ?? chosen;
     const controllerBuilder = checks
-      .map((check, index) => (check(chosen) ? controllerBuilders[index] : undefined))
+      .map((check, index) => (check(supportedCandidate) ? controllerBuilders[index] : undefined))
       .filter((check) => check)[0];
 
     if (controllerBuilder === undefined) {
-      const {
-        advertisement: { manufacturerDataList, serviceUuidsList },
-      } = chosen;
+    const {
+      advertisement: { manufacturerDataList, serviceUuidsList },
+    } = supportedCandidate;
       logWarn(
         '[Keeson] Device not supported, please contact me on Discord',
-        chosen.name,
-        JSON.stringify({ name: chosen.name, address: chosen.address, manufacturerDataList, serviceUuidsList })
+      supportedCandidate.name,
+      JSON.stringify({
+        name: supportedCandidate.name,
+        address: supportedCandidate.address,
+        manufacturerDataList,
+        serviceUuidsList,
+      })
       );
       continue;
     }
 
     // Setup each logical bed in parallel with retry logic + linked-controller failover
-    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, sorted, device, controllerBuilder));
+  setupPromises.push(setupDeviceWithRetry(mqtt, esphome, sorted, device, controllerBuilder));
   }
 
   // Wait for all devices to be set up (they will retry forever if needed)

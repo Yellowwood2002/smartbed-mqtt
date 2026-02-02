@@ -1,5 +1,5 @@
 import { Connection } from '@2colors/esphome-native-api';
-import { logDebug, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
+import { logDebug, logDebugDedup, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 
 /**
  * Establish an ESPHome native API connection robustly.
@@ -94,9 +94,15 @@ export const connect = (connection: Connection) => {
           const msgId = payload?.id ?? id;
           const len = payload?.length;
           const bytes = payload?.bytes;
-          logWarnDedup(
+          // Project memory:
+          // ESPHome BLE proxies may emit message id 126 (BluetoothLERawAdvertisementsResponse) frequently.
+          // Even if our parser can't decode it reliably, it is not actionable for SmartbedMQTT operation.
+          // Suppress it to keep logs focused on real failures.
+          if (Number(msgId) === 126) return;
+
+          logDebugDedup(
             `esphome:unknownMessage:${connection.host}:${String(msgId)}`,
-            10_000,
+            60_000,
             `[ESPHome] Unknown message id from ${connection.host}: ${String(msgId)}${
               len ? ` len=${String(len)}` : ''
             }${bytes ? ` bytes[0..16]=${String(bytes)}` : ''}`

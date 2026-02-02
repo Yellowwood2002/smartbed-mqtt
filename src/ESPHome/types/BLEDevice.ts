@@ -15,6 +15,20 @@ const deviceRegistry = new Map<DeviceKey, BLEDevice>();
 // and the per-instance mutex is not sufficient. Overlapping connects manifest as proxy logs like:
 // "Connection request ignored, state: IDLE/CONNECTING/ESTABLISHED" and ESP-IDF GATT_BUSY.
 const connectInFlightByDeviceKey = new Map<DeviceKey, Promise<void>>();
+// Per-device cooldown after hard ESP-IDF failures (status=133 / reason 0x100 patterns).
+const cooldownUntilByDeviceKey = new Map<DeviceKey, number>();
+const ignoredConnectsByDeviceKey = new Map<DeviceKey, number>();
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const formatMacForProxyLog = (mac12hex: string) =>
+  mac12hex
+    .toLowerCase()
+    .replace(/[^0-9a-f]/g, '')
+    .padStart(12, '0')
+    .match(/.{1,2}/g)
+    ?.join(':')
+    .toUpperCase() ?? mac12hex;
 
 type ConnectPreference = {
   // Prefer CONNECT_V3_WITHOUT_CACHE
@@ -92,6 +106,8 @@ export class BLEDevice implements IBLEDevice {
   
   // Instance-local mutex (kept as a secondary guard; global mutex is primary)
   private connectingPromise: Promise<void> | null = null;
+  // Diagnostics counters (best-effort, surfaced via Keeson diagnostics sensor)
+  private ignoredConnectCount = 0;
 
   public mac: string;
   public get address() {
@@ -181,6 +197,13 @@ export class BLEDevice implements IBLEDevice {
     const globalInFlight = connectInFlightByDeviceKey.get(this.deviceKey);
     if (globalInFlight) return globalInFlight;
 
+    // Cooldown gate: after hard failures, pause briefly to avoid thrash.
+    const now = Date.now();
+    const cooldownUntil = cooldownUntilByDeviceKey.get(this.deviceKey) ?? 0;
+    if (cooldownUntil > now) {
+      await sleep(cooldownUntil - now);
+    }
+
     // Instance mutex: if already connecting, return the existing promise
     if (this.connectingPromise) return this.connectingPromise;
 
@@ -189,6 +212,7 @@ export class BLEDevice implements IBLEDevice {
         ensurePrefsLoaded();
         const advAddressType = this.advertisement.addressType;
         const pref = connectPrefsByDeviceKey.get(this.deviceKey) ?? {};
+        const proxyMac = formatMacForProxyLog(this.mac);
 
         const withTimeout = async <T>(label: string, ms: number, fn: () => Promise<T>): Promise<T> => {
           const startedAt = Date.now();
@@ -208,17 +232,82 @@ export class BLEDevice implements IBLEDevice {
           }
         };
 
+        const raceProxyLogsToAbort = (label: string) => {
+          // Only effective if connect.ts has subscribed to proxy logs (LOG_LEVEL debug/trace).
+          let cleanup = () => {};
+          const promise = new Promise<never>((_resolve, reject) => {
+            const handler = (msg: any) => {
+              const line = String(msg?.message ?? '').trim();
+              if (!line) return;
+              // Match only log lines for this MAC.
+              if (!line.includes(`[${proxyMac}]`)) return;
+
+              const lower = line.toLowerCase();
+              // Proxy explicitly tells us it ignored the request. Waiting for connect timeout wastes time.
+              if (lower.includes('connection request ignored')) {
+                const nextCount = (ignoredConnectsByDeviceKey.get(this.deviceKey) ?? 0) + 1;
+                ignoredConnectsByDeviceKey.set(this.deviceKey, nextCount);
+                this.ignoredConnectCount = nextCount;
+                (this as any).__bleDiag = {
+                  ...(this as any).__bleDiag,
+                  ignoredConnects: nextCount,
+                  lastIgnoredAt: Date.now(),
+                  lastIgnoredLine: line,
+                  lastIgnoredAttempt: label,
+                };
+                reject(new Error(`Proxy ignored connection request (${label})`));
+                return;
+              }
+
+              // Hard failure patterns (ESP-IDF status=133 / reason 0x100) -> cooldown to avoid thrashing.
+              if (lower.includes('status=133') || lower.includes('reason 0x100') || lower.includes('reason=0x100')) {
+                const until = Date.now() + 3_000;
+                cooldownUntilByDeviceKey.set(this.deviceKey, until);
+                (this as any).__bleDiag = {
+                  ...(this as any).__bleDiag,
+                  cooldownUntil: until,
+                  lastHardFailureAt: Date.now(),
+                  lastHardFailureLine: line,
+                  lastHardFailureAttempt: label,
+                };
+                reject(new Error(`Proxy reported hard BLE failure (${label})`));
+              }
+            };
+            cleanup = () => {
+              try {
+                this.connection.off('message.SubscribeLogsResponse', handler);
+              } catch {}
+            };
+            try {
+              this.connection.on('message.SubscribeLogsResponse', handler);
+            } catch {}
+          });
+          return { promise, cleanup };
+        };
+
         const connectOnce = async (withoutCache: boolean, label: string) => {
           // DO NOT omit addressType: the proxy log shows "Missing address type in connect request" and refuses.
           const addressType = advAddressType;
           const ms = 12_000;
+          const { promise: abortPromise, cleanup } = raceProxyLogsToAbort(label);
           if (withoutCache && typeof (this.connection as any).connectBluetoothDeviceServiceWithoutCache === 'function') {
             return await withTimeout(`${label}:without-cache`, ms, async () => {
-              return await (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType);
+              try {
+                return await Promise.race([
+                  (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType),
+                  abortPromise,
+                ]);
+              } finally {
+                cleanup();
+              }
             });
           }
           return await withTimeout(`${label}:with-cache`, ms, async () => {
-            return await this.connection.connectBluetoothDeviceService(this.address, addressType);
+            try {
+              return await Promise.race([this.connection.connectBluetoothDeviceService(this.address, addressType), abortPromise]);
+            } finally {
+              cleanup();
+            }
           });
         };
 
@@ -281,9 +370,25 @@ export class BLEDevice implements IBLEDevice {
           logWarn(
             `[BLE] Proxy reported mtu=0 for ${this.name} (${this.mac}) — treating as suspicious (ESP32 status=133/0x100 patterns)`
           );
+          const until = Date.now() + 2_000;
+          cooldownUntilByDeviceKey.set(this.deviceKey, until);
         }
 
         this.connected = true;
+        (this as any).__bleDiag = {
+          ...(this as any).__bleDiag,
+          deviceKey: this.deviceKey,
+          proxyHost: this.connection.host,
+          mac: this.mac,
+          proxyMac,
+          addressType: advAddressType,
+          usedWithoutCache,
+          mtu,
+          errorCode,
+          ignoredConnects: ignoredConnectsByDeviceKey.get(this.deviceKey) ?? this.ignoredConnectCount,
+          cooldownUntil: cooldownUntilByDeviceKey.get(this.deviceKey) ?? 0,
+          lastConnectedAt: Date.now(),
+        };
         logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac}) (mtu=${mtu ?? 'n/a'})`);
         if (this.paired) await this.pair();
       } catch (error: any) {
@@ -293,6 +398,14 @@ export class BLEDevice implements IBLEDevice {
           (error?.code ? `code=${String(error.code)}` : '') ||
           String(error);
         logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, msg);
+        const lower = String(msg).toLowerCase();
+        if (lower.includes('status=133') || lower.includes('0x100') || lower.includes('gatt_busy') || lower.includes('write after end')) {
+          const until = Date.now() + 3_000;
+          cooldownUntilByDeviceKey.set(this.deviceKey, until);
+          (this as any).__bleDiag = { ...(this as any).__bleDiag, cooldownUntil: until, lastHardFailureAt: Date.now(), lastError: msg };
+        } else {
+          (this as any).__bleDiag = { ...(this as any).__bleDiag, lastError: msg, lastFailedAt: Date.now() };
+        }
         this.connected = false;
         throw error;
       } finally {
