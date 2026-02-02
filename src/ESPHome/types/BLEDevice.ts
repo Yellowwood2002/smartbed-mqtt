@@ -112,12 +112,32 @@ export class BLEDevice implements IBLEDevice {
     this.connectingPromise = (async () => {
       try {
         const { addressType } = this.advertisement;
-        await this.connection.connectBluetoothDeviceService(this.address, addressType);
+        const response: any = await this.connection.connectBluetoothDeviceService(this.address, addressType);
+        const connected = response?.connected === true;
+        const errorCode = response?.error;
+        const mtu = response?.mtu;
+
+        // IMPORTANT: don't claim success unless the proxy confirms it.
+        if (!connected) {
+          throw new Error(
+            `ESPHome proxy connect failed (connected=${String(response?.connected)} error=${String(errorCode)} mtu=${String(
+              mtu
+            )})`
+          );
+        }
+
+        if (typeof errorCode === 'number' && errorCode !== 0) {
+          logWarn(
+            `[BLE] Proxy reported non-zero connect error for ${this.name} (${this.mac}) (error=${errorCode} mtu=${mtu})`
+          );
+        }
+
         this.connected = true;
-        logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac})`);
+        logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac}) (mtu=${mtu ?? 'n/a'})`);
         if (this.paired) await this.pair();
       } catch (error: any) {
         logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, error?.message || String(error));
+        this.connected = false;
         throw error;
       } finally {
         // Clear the promise once connection succeeds or fails
