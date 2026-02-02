@@ -17,6 +17,11 @@ interface BLEProxy {
 }
 
 export class ESPConnection implements IESPConnection {
+  // Ensure we only subscribe to BLE advertisements once per API connection.
+  // Re-subscribing triggers ESPHome bluetooth_proxy errors:
+  // "Only one API subscription is allowed at a time".
+  private bleAdvertisementSubscribed = new WeakSet<Connection>();
+
   constructor(private connections: Connection[], private proxies: BLEProxy[]) {}
 
   async reconnect(): Promise<void> {
@@ -213,7 +218,11 @@ export class ESPConnection implements IESPConnection {
     });
     const listeners = this.connections.map(listenerBuilder);
     for (const { connection, listener } of listeners) {
-      connection.on('message.BluetoothLEAdvertisementResponse', listener).subscribeBluetoothAdvertisementService();
+      connection.on('message.BluetoothLEAdvertisementResponse', listener);
+      if (!this.bleAdvertisementSubscribed.has(connection)) {
+        connection.subscribeBluetoothAdvertisementService();
+        this.bleAdvertisementSubscribed.add(connection);
+      }
     }
     await complete;
     for (const { connection, listener } of listeners) {

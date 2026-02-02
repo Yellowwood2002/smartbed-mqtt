@@ -210,7 +210,7 @@ index 734c0fc..2aca3f6 100644
      98: 'TextStateResponse',
      99: 'TextCommandRequest'
 diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
-index a07678d..0150dcd 100644
+index a07678d..0135de5 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
 @@ -67,6 +67,14 @@ class NoiseFrameHelper extends FrameHelper {
@@ -228,7 +228,7 @@ index a07678d..0150dcd 100644
                          this.emit("message", message);
                  }
              }
-@@ -127,7 +135,16 @@ class NoiseFrameHelper extends FrameHelper {
+@@ -127,7 +135,17 @@ class NoiseFrameHelper extends FrameHelper {
          if (buffer.length < 4) return null;
          const messageId = (buffer[0] << 8) | buffer[1];
          const messageLength = (buffer[2] << 8) | buffer[3];
@@ -239,7 +239,8 @@ index a07678d..0150dcd 100644
 +        if (!message) {
 +            return {
 +                __unknownMessageId: messageId,
-+                __unknownBytes: raw.subarray(0, 16).toString('hex'),
++                // NOTE: on encrypted links, `raw` may be a Uint8Array; wrap so we get real hex, not "8,2,16,..."
++                __unknownBytes: Buffer.from(raw.subarray(0, 16)).toString('hex'),
 +                length: messageLength + 4,
 +            };
 +        }
@@ -247,7 +248,7 @@ index a07678d..0150dcd 100644
          return message;
      }
 diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
-index 8bb8dfe..84ba944 100644
+index 8bb8dfe..c5770d5 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
 @@ -42,7 +42,16 @@ class PlaintextFrameHelper extends FrameHelper {
@@ -261,7 +262,7 @@ index 8bb8dfe..84ba944 100644
 +        if (!message) {
 +            return {
 +                __unknownMessageId: messageId,
-+                __unknownBytes: raw.subarray(0, 16).toString('hex'),
++                __unknownBytes: Buffer.from(raw.subarray(0, 16)).toString('hex'),
 +                length: messageLength + offset,
 +            };
 +        }

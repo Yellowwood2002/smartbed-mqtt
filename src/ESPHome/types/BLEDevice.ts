@@ -117,6 +117,12 @@ export class BLEDevice implements IBLEDevice {
         const errorCode = response?.error;
         const mtu = response?.mtu;
 
+        logDebug(
+          `[BLE] Proxy connect response for ${this.name} (${this.mac}): connected=${String(connected)} error=${String(
+            errorCode
+          )} mtu=${String(mtu)} addressType=${String(addressType)}`
+        );
+
         // IMPORTANT: don't claim success unless the proxy confirms it.
         if (!connected) {
           throw new Error(
@@ -129,6 +135,12 @@ export class BLEDevice implements IBLEDevice {
         if (typeof errorCode === 'number' && errorCode !== 0) {
           logWarn(
             `[BLE] Proxy reported non-zero connect error for ${this.name} (${this.mac}) (error=${errorCode} mtu=${mtu})`
+          );
+        }
+
+        if ((mtu ?? 0) === 0) {
+          logWarn(
+            `[BLE] Proxy reported mtu=0 for ${this.name} (${this.mac}) — treating as suspicious (ESP32 status=133/0x100 patterns)`
           );
         }
 
