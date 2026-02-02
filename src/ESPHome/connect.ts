@@ -1,4 +1,5 @@
 import { Connection } from '@2colors/esphome-native-api';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 import { logDebug, logDebugDedup, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 
 /**
@@ -52,6 +53,7 @@ export const connect = (connection: Connection) => {
       const errorMessage = error?.message || String(error);
       const errorCode = error?.code || '';
       const key = `esphome:socket:${connection.host}:${errorCode || errorMessage}`;
+      const lower = String(errorMessage).toLowerCase();
       const isSocketError =
         errorCode === 'ECONNRESET' ||
         errorCode === 'ECONNREFUSED' ||
@@ -70,7 +72,23 @@ export const connect = (connection: Connection) => {
           ? `[ESPHome] Socket error on ${connection.host} (code=${errorCode || 'n/a'}): ${errorMessage}`
           : `[ESPHome] Connection error on ${connection.host} (code=${errorCode || 'n/a'}): ${errorMessage}`
       );
-      // Do not reject here; once connected, higher-level code decides when to reconnect.
+
+      // Critical wedged state:
+      // "write after end" often means the underlying stream is dead but the process keeps running.
+      // Request a controlled reconnect so the add-on self-heals without requiring a manual Supervisor restart.
+      if (errorCode === 'ERR_STREAM_WRITE_AFTER_END' || lower.includes('write after end')) {
+        try {
+          healthMonitor.requestRestart({
+            kind: 'ble',
+            reason: 'ESPHome socket write after end (forcing reconnect)',
+            error: `${errorCode || 'ERR_STREAM_WRITE_AFTER_END'}: ${errorMessage}`,
+          });
+        } catch {}
+        try {
+          // Best-effort: close the connection now to unblock reconnect.
+          connection.disconnect();
+        } catch {}
+      }
     };
 
     const onAuthorized = async () => {
