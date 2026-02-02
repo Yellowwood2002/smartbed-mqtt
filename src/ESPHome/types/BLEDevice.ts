@@ -555,8 +555,16 @@ export class BLEDevice implements IBLEDevice {
 
           // quick retry after small delay
           await new Promise((r) => setTimeout(r, 400));
+          const retry1StartedAt = Date.now();
           const retry1 = await this.connection.listBluetoothGATTServicesService(this.address);
           this.servicesList = retry1.servicesList;
+          (this as any).__bleDiag = {
+            ...(this as any).__bleDiag,
+            lastServicesRetry1At: Date.now(),
+            lastServicesRetry1DurationMs: Date.now() - retry1StartedAt,
+            lastServicesCount: this.servicesList.length,
+            lastServicesAt: Date.now(),
+          };
           logWarn(
             `[BLE] GATT services retry-after-delay for ${this.name} (${this.mac}) ` +
               `(services=${this.servicesList.length})`
@@ -573,8 +581,17 @@ export class BLEDevice implements IBLEDevice {
               this.advertisement.addressType
             );
             await new Promise((r) => setTimeout(r, 600));
+            const retry2StartedAt = Date.now();
             const retry2 = await this.connection.listBluetoothGATTServicesService(this.address);
             this.servicesList = retry2.servicesList;
+            (this as any).__bleDiag = {
+              ...(this as any).__bleDiag,
+              lastServicesProbeAt: Date.now(),
+              lastServicesProbeDurationMs: Date.now() - retry2StartedAt,
+              lastServicesCount: this.servicesList.length,
+              lastServicesAt: Date.now(),
+              lastServicesRecovered: this.servicesList.length > 0,
+            };
             logWarn(
               `[BLE] GATT services after cache-clear probe for ${this.name} (${this.mac}) (services=${this.servicesList.length})`
             );
@@ -587,6 +604,11 @@ export class BLEDevice implements IBLEDevice {
               `[BLE] Cache-clear probe failed for ${this.name} (${this.mac})`,
               e?.message || String(e)
             );
+            (this as any).__bleDiag = {
+              ...(this as any).__bleDiag,
+              lastServicesProbeError: e?.message || String(e),
+              lastServicesRecovered: false,
+            };
           }
         }
       } catch (error: any) {

@@ -295,6 +295,62 @@ const isGattServicesTimeout = (error: any): boolean => {
     msg.includes('ble timeout');
 };
 
+const describeDisconnectReason = (reason?: string): string | undefined => {
+  const r = (reason || '').toLowerCase();
+  if (!r) return undefined;
+  switch (r) {
+    case '0x08':
+      return 'Connection timed out / link lost';
+    case '0x16':
+      return 'Local host terminated connection (often transient ESP32/stack issue)';
+    case '0x100':
+      return 'ESP32 BLE stack failure (status=133/0x100 pattern)';
+    case '0x00':
+      return 'Normal close';
+    default:
+      return `Disconnect reason ${reason}`;
+  }
+};
+
+const makePlainLanguage = (bedName: string, bleDevice: IBLEDevice, status: 'connecting' | 'connected' | 'failed', error?: string) => {
+  const ble: any = (bleDevice as any).__bleDiag || {};
+  const via = `${bleDevice.name} (${bleDevice.mac})`;
+
+  const pieces: string[] = [];
+  const actions: string[] = [];
+
+  if (status === 'connecting') {
+    pieces.push(`Connecting to ${bedName} via ${via}.`);
+  } else if (status === 'connected') {
+    pieces.push(`Connected to ${bedName} via ${via}.`);
+  } else {
+    pieces.push(`Failed to connect to ${bedName} via ${via}.`);
+  }
+
+  if (ble.usedWithoutCache === true) actions.push('Using “without cache” BLE connect mode.');
+  if (ble.ignoredConnects > 0) actions.push('Proxy ignored a connect request; SmartbedMQTT retried automatically.');
+  if (ble.lastServicesRecovered === true) actions.push('GATT services were initially empty; cache-clear recovery succeeded.');
+  if (ble.lastServicesCount === 0) actions.push('GATT services returned empty (this can be transient).');
+
+  const discText = describeDisconnectReason(ble.lastDisconnectReason);
+  if (discText) pieces.push(`Last disconnect: ${discText}.`);
+
+  if (typeof ble.connectDurationMs === 'number') pieces.push(`Connect took ${ble.connectDurationMs}ms.`);
+  if (typeof ble.lastServicesDurationMs === 'number') pieces.push(`Service discovery took ${ble.lastServicesDurationMs}ms.`);
+
+  let whatToDo = 'If it starts failing repeatedly, use the “Reconnect BLE (soft)” button first, then “Restart add-on”, then “Reboot BLE Proxy”.';
+  if (error) {
+    whatToDo = `Last error: ${error}. ${whatToDo}`;
+  }
+
+  return {
+    summary: pieces.join(' '),
+    what_happened: pieces.join(' '),
+    action_taken: actions.join(' ') || 'Normal connection.',
+    what_to_do: whatToDo,
+  };
+};
+
 const setupDeviceWithRetry = async (
   mqtt: IMQTTConnection,
   _esphome: IESPConnection,
@@ -338,12 +394,14 @@ const setupDeviceWithRetry = async (
       for (const bleDevice of candidates) {
         const { name, mac } = bleDevice;
         try {
+          const plain = makePlainLanguage(bedName, bleDevice, 'connecting');
           diag.setState({
             status: 'connecting',
             bed: bedName,
             bedKey,
             pinnedController: getPinnedControllerKey(bedKey) ?? null,
             attempting: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            ...plain,
             order: candidates.map((c) => ({
               name: c.name,
               mac: c.mac,
@@ -357,12 +415,14 @@ const setupDeviceWithRetry = async (
           recordControllerSuccess(bedKey, mac);
           // Feed central HealthMonitor so it can trigger reconnect/proxy reboot decisions.
           healthMonitor.recordBleSuccess(bedName);
+          const plain2 = makePlainLanguage(bedName, bleDevice, 'connected');
           diag.setState({
             status: 'connected',
             bed: bedName,
             bedKey,
             pinnedController: getPinnedControllerKey(bedKey) ?? null,
             connectedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            ...plain2,
             ble: (bleDevice as any).__bleDiag,
             controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
             controllerFailures: getRecentFailureCounts(getControllerStats(bedKey, controllerKeyFor(mac))),
@@ -373,12 +433,14 @@ const setupDeviceWithRetry = async (
           const msg = error?.message || String(error);
           recordControllerFailure(bedKey, mac, error);
           healthMonitor.recordBleFailure(bedName, error, (bleDevice as any)?.host);
+          const plain3 = makePlainLanguage(bedName, bleDevice, 'failed', msg);
           diag.setState({
             status: 'failed',
             bed: bedName,
             bedKey,
             pinnedController: getPinnedControllerKey(bedKey) ?? null,
             failedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
+            ...plain3,
             error: msg,
             ble: (bleDevice as any).__bleDiag,
             controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
