@@ -9,6 +9,10 @@ import { logDebug, logInfo, logWarn } from '@utils/logger';
 // This allows us to clean up old listeners when new instances are created
 type DeviceKey = string;
 const deviceRegistry = new Map<DeviceKey, BLEDevice>();
+// Heuristic memory: some devices/proxies behave better when connecting WITHOUT cache.
+// Keyed by (proxy host + address) so once we learn "without cache fixes services=0",
+// we try that first next time to reduce flakiness and startup time.
+const preferWithoutCacheByDeviceKey = new Map<DeviceKey, boolean>();
 
 function getDeviceKey(connection: Connection, address: number): DeviceKey {
   return `${connection.host || 'unknown'}:${address}`;
@@ -112,7 +116,31 @@ export class BLEDevice implements IBLEDevice {
     this.connectingPromise = (async () => {
       try {
         const { addressType } = this.advertisement;
-        const response: any = await this.connection.connectBluetoothDeviceService(this.address, addressType);
+        const preferWithoutCache = preferWithoutCacheByDeviceKey.get(this.deviceKey) === true;
+
+        const connectOnce = async (withoutCache: boolean) => {
+          if (withoutCache && typeof (this.connection as any).connectBluetoothDeviceServiceWithoutCache === 'function') {
+            return await (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType);
+          }
+          return await this.connection.connectBluetoothDeviceService(this.address, addressType);
+        };
+
+        // Try preferred mode first, then fall back once.
+        let response: any;
+        try {
+          response = await connectOnce(preferWithoutCache);
+        } catch (e) {
+          response = undefined;
+          // If the preferred mode threw, try the other mode once before failing.
+          try {
+            response = await connectOnce(!preferWithoutCache);
+            // If fallback worked, remember it.
+            preferWithoutCacheByDeviceKey.set(this.deviceKey, !preferWithoutCache);
+          } catch {
+            throw e;
+          }
+        }
+
         const connected = response?.connected === true;
         const errorCode = response?.error;
         const mtu = response?.mtu;
@@ -125,6 +153,24 @@ export class BLEDevice implements IBLEDevice {
 
         // IMPORTANT: don't claim success unless the proxy confirms it.
         if (!connected) {
+          // If we haven't tried the other mode yet, do so once (proxy cache can be poisoned).
+          if (!preferWithoutCacheByDeviceKey.has(this.deviceKey)) {
+            try {
+              const retry: any = await connectOnce(true);
+              if (retry?.connected === true) {
+                preferWithoutCacheByDeviceKey.set(this.deviceKey, true);
+                logWarn(
+                  `[BLE] Connect succeeded only with WITHOUT cache for ${this.name} (${this.mac}); pinning preference`
+                );
+                this.connected = true;
+                logInfo(
+                  `[BLE] Successfully connected to device ${this.name} (${this.mac}) (mtu=${retry?.mtu ?? 'n/a'})`
+                );
+                if (this.paired) await this.pair();
+                return;
+              }
+            } catch {}
+          }
           throw new Error(
             `ESPHome proxy connect failed (connected=${String(response?.connected)} error=${String(errorCode)} mtu=${String(
               mtu
@@ -148,7 +194,10 @@ export class BLEDevice implements IBLEDevice {
         logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac}) (mtu=${mtu ?? 'n/a'})`);
         if (this.paired) await this.pair();
       } catch (error: any) {
-        logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, error?.message || String(error));
+        logWarn(
+          `[BLE] Failed to connect to device ${this.name} (${this.mac}):`,
+          error?.message || String(error)
+        );
         this.connected = false;
         throw error;
       } finally {
@@ -226,6 +275,10 @@ export class BLEDevice implements IBLEDevice {
             logWarn(
               `[BLE] GATT services after cache-clear probe for ${this.name} (${this.mac}) (services=${this.servicesList.length})`
             );
+            if (this.servicesList.length > 0) {
+              // If cache-clear + without-cache fixed discovery, prefer without-cache next time.
+              preferWithoutCacheByDeviceKey.set(this.deviceKey, true);
+            }
           } catch (e: any) {
             logWarn(
               `[BLE] Cache-clear probe failed for ${this.name} (${this.mac})`,
