@@ -14,8 +14,6 @@ const deviceRegistry = new Map<DeviceKey, BLEDevice>();
 type ConnectPreference = {
   // Prefer CONNECT_V3_WITHOUT_CACHE
   withoutCache?: boolean;
-  // Prefer omitting address type hint
-  omitAddressType?: boolean;
 };
 
 // Persist learned preferences across restarts (in add-on data dir).
@@ -31,7 +29,6 @@ const loadPrefs = () => {
       if (!k || typeof v !== 'object' || v === null) continue;
       const pref: ConnectPreference = {};
       if (typeof (v as any).withoutCache === 'boolean') pref.withoutCache = (v as any).withoutCache;
-      if (typeof (v as any).omitAddressType === 'boolean') pref.omitAddressType = (v as any).omitAddressType;
       connectPrefsByDeviceKey.set(k, pref);
     }
   } catch {
@@ -44,21 +41,22 @@ const ensurePrefsLoaded = () => {
   if (prefsLoaded) return;
   prefsLoaded = true;
   loadPrefs();
+  if (connectPrefsByDeviceKey.size) {
+    logDebug(`[BLE] Loaded connect prefs from ${PREFS_PATH} (count=${connectPrefsByDeviceKey.size})`);
+  } else {
+    logDebug(`[BLE] No persisted connect prefs found at ${PREFS_PATH}`);
+  }
 };
 
-let prefsWriteTimer: NodeJS.Timeout | undefined;
-const persistPrefsSoon = () => {
-  if (prefsWriteTimer) return;
-  prefsWriteTimer = setTimeout(() => {
-    prefsWriteTimer = undefined;
-    try {
-      const obj: Record<string, ConnectPreference> = {};
-      for (const [k, v] of connectPrefsByDeviceKey.entries()) obj[k] = v;
-      writeFileSync(PREFS_PATH, JSON.stringify(obj, null, 2), 'utf8');
-    } catch {
-      // ok
-    }
-  }, 750);
+const persistPrefsNow = () => {
+  try {
+    const obj: Record<string, ConnectPreference> = {};
+    for (const [k, v] of connectPrefsByDeviceKey.entries()) obj[k] = v;
+    writeFileSync(PREFS_PATH, JSON.stringify(obj, null, 2), 'utf8');
+    logDebug(`[BLE] Saved connect prefs to ${PREFS_PATH} (count=${connectPrefsByDeviceKey.size})`);
+  } catch (e: any) {
+    logWarn(`[BLE] Failed saving connect prefs to ${PREFS_PATH}`, e?.message || String(e));
+  }
 };
 
 const setConnectPref = (key: DeviceKey, patch: ConnectPreference) => {
@@ -66,7 +64,7 @@ const setConnectPref = (key: DeviceKey, patch: ConnectPreference) => {
   const prev = connectPrefsByDeviceKey.get(key) ?? {};
   const next = { ...prev, ...patch };
   connectPrefsByDeviceKey.set(key, next);
-  persistPrefsSoon();
+  persistPrefsNow();
 };
 
 function getDeviceKey(connection: Connection, address: number): DeviceKey {
@@ -174,31 +172,27 @@ export class BLEDevice implements IBLEDevice {
         const advAddressType = this.advertisement.addressType;
         const pref = connectPrefsByDeviceKey.get(this.deviceKey) ?? {};
 
-        const connectOnce = async (withoutCache: boolean, omitAddressType: boolean) => {
-          const addressType = omitAddressType ? undefined : advAddressType;
+        const connectOnce = async (withoutCache: boolean) => {
+          // DO NOT omit addressType: the proxy log shows "Missing address type in connect request" and refuses.
+          const addressType = advAddressType;
           if (withoutCache && typeof (this.connection as any).connectBluetoothDeviceServiceWithoutCache === 'function') {
             return await (this.connection as any).connectBluetoothDeviceServiceWithoutCache(this.address, addressType);
           }
           return await this.connection.connectBluetoothDeviceService(this.address, addressType);
         };
 
-        const attempts: Array<[boolean, boolean, string]> = [];
+        const attempts: Array<[boolean, string]> = [];
         const firstWithoutCache = pref.withoutCache === true;
-        const firstOmitAddressType = pref.omitAddressType === true;
-        attempts.push([firstWithoutCache, firstOmitAddressType, 'preferred']);
-        attempts.push([firstWithoutCache, !firstOmitAddressType, 'flip-addressType']);
-        attempts.push([!firstWithoutCache, firstOmitAddressType, 'flip-cache']);
-        attempts.push([!firstWithoutCache, !firstOmitAddressType, 'flip-both']);
+        attempts.push([firstWithoutCache, 'preferred']);
+        attempts.push([!firstWithoutCache, 'flip-cache']);
 
         let response: any;
         let usedWithoutCache = firstWithoutCache;
-        let usedOmitAddressType = firstOmitAddressType;
         let lastError: any;
-        for (const [withoutCache, omitAddressType, label] of attempts) {
+        for (const [withoutCache, label] of attempts) {
           usedWithoutCache = withoutCache;
-          usedOmitAddressType = omitAddressType;
           try {
-            response = await connectOnce(withoutCache, omitAddressType);
+            response = await connectOnce(withoutCache);
             if (response?.connected === true) break;
             lastError = new Error(
               `ESPHome proxy connect not connected (connected=${String(response?.connected)} error=${String(
@@ -220,15 +214,12 @@ export class BLEDevice implements IBLEDevice {
             errorCode
           )} mtu=${String(mtu)} addressType=${String(advAddressType)} usedWithoutCache=${String(
             usedWithoutCache
-          )} usedOmitAddressType=${String(usedOmitAddressType)}`
+          )}`
         );
 
         // Remember successful non-default choices for next time (persisted).
-        if (
-          usedWithoutCache !== (pref.withoutCache === true) ||
-          usedOmitAddressType !== (pref.omitAddressType === true)
-        ) {
-          setConnectPref(this.deviceKey, { withoutCache: usedWithoutCache, omitAddressType: usedOmitAddressType });
+        if (usedWithoutCache !== (pref.withoutCache === true)) {
+          setConnectPref(this.deviceKey, { withoutCache: usedWithoutCache });
         }
 
         if (typeof errorCode === 'number' && errorCode !== 0) {
