@@ -179,6 +179,48 @@ export class BLEDevice implements IBLEDevice {
         logDebug(
           `[BLE] GATT services ready for ${this.name} (${this.mac}) in ${Date.now() - startedAt}ms (services=${servicesList.length})`
         );
+
+        // Probe: a "connected" device returning zero services is almost always a proxy-side issue.
+        // Try a short delay and one retry; then clear cache + connect without cache + retry once.
+        if (this.servicesList.length === 0) {
+          logWarn(
+            `[BLE] GATT services returned empty for ${this.name} (${this.mac}) ` +
+              `rssi=${this.advertisement.rssi} addressType=${this.advertisement.addressType} ` +
+              `advUuids=${(this.advertisement.serviceUuidsList || []).join(',') || 'none'}`
+          );
+
+          // quick retry after small delay
+          await new Promise((r) => setTimeout(r, 400));
+          const retry1 = await this.connection.listBluetoothGATTServicesService(this.address);
+          this.servicesList = retry1.servicesList;
+          logWarn(
+            `[BLE] GATT services retry-after-delay for ${this.name} (${this.mac}) ` +
+              `(services=${this.servicesList.length})`
+          );
+        }
+
+        if (this.servicesList.length === 0) {
+          try {
+            logWarn(`[BLE] Probing cache-clear + connect-without-cache for ${this.name} (${this.mac})`);
+            await (this.connection as any).clearBluetoothDeviceCacheService?.(this.address);
+            await this.disconnect();
+            await (this.connection as any).connectBluetoothDeviceServiceWithoutCache?.(
+              this.address,
+              this.advertisement.addressType
+            );
+            await new Promise((r) => setTimeout(r, 600));
+            const retry2 = await this.connection.listBluetoothGATTServicesService(this.address);
+            this.servicesList = retry2.servicesList;
+            logWarn(
+              `[BLE] GATT services after cache-clear probe for ${this.name} (${this.mac}) (services=${this.servicesList.length})`
+            );
+          } catch (e: any) {
+            logWarn(
+              `[BLE] Cache-clear probe failed for ${this.name} (${this.mac})`,
+              e?.message || String(e)
+            );
+          }
+        }
       } catch (error: any) {
         // Clear cache on error so we can retry
         this.servicesList = undefined;

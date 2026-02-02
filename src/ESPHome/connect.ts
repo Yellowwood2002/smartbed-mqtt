@@ -1,5 +1,5 @@
 import { Connection } from '@2colors/esphome-native-api';
-import { logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
+import { logDebug, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 
 /**
  * Establish an ESPHome native API connection robustly.
@@ -90,12 +90,49 @@ export const connect = (connection: Connection) => {
         // After the handshake is complete, attach persistent error logging.
         connection.on('error', socketErrorHandler);
         connection.on('unknownMessage', (id: any) => {
+          const payload = typeof id === 'object' ? id : { id };
+          const msgId = payload?.id ?? id;
+          const len = payload?.length;
+          const bytes = payload?.bytes;
           logWarnDedup(
-            `esphome:unknownMessage:${connection.host}:${String(id)}`,
+            `esphome:unknownMessage:${connection.host}:${String(msgId)}`,
             10_000,
-            `[ESPHome] Unknown message id from ${connection.host}: ${String(id)}`
+            `[ESPHome] Unknown message id from ${connection.host}: ${String(msgId)}${
+              len ? ` len=${String(len)}` : ''
+            }${bytes ? ` bytes[0..16]=${String(bytes)}` : ''}`
           );
         });
+
+        // Verbose probes (only when LOG_LEVEL is debug/trace): subscribe to proxy logs + connection slot telemetry
+        const logLevel = String(process.env.LOG_LEVEL || '').toLowerCase();
+        if (logLevel === 'debug' || logLevel === 'trace') {
+          try {
+            (connection as any).subscribeBluetoothConnectionsFreeService?.();
+            connection.on('message.BluetoothConnectionsFreeResponse', (msg: any) => {
+              logDebug(
+                `[ESPHome] BLE connections free on ${connection.host}: free=${msg?.free} limit=${msg?.limit}`
+              );
+            });
+          } catch {}
+
+          try {
+            (connection as any).subscribeLogsService?.();
+            connection.on('message.SubscribeLogsResponse', (msg: any) => {
+              const line = String(msg?.message ?? '').trim();
+              if (!line) return;
+              const lower = line.toLowerCase();
+              if (
+                lower.includes('bluetooth') ||
+                lower.includes('gatt') ||
+                lower.includes('proxy') ||
+                lower.includes('error') ||
+                lower.includes('warn')
+              ) {
+                logDebug(`[ESPHome][ProxyLog ${connection.host}] ${line}`);
+              }
+            });
+          } catch {}
+        }
         if ((connection as any).socket) {
           const socket = (connection as any).socket;
           socket.on('error', socketErrorHandler);

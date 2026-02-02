@@ -1,5 +1,5 @@
 diff --git a/node_modules/@2colors/esphome-native-api/lib/connection.js b/node_modules/@2colors/esphome-native-api/lib/connection.js
-index 7c2ef1b..eeca34f 100644
+index 7c2ef1b..cd1b031 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/connection.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/connection.js
 @@ -6,6 +6,11 @@ const Package = require('../package.json');
@@ -62,7 +62,19 @@ index 7c2ef1b..eeca34f 100644
  
          return await this.sendMessageAwaitResponse(message, 'HelloResponse');
      }
-@@ -341,7 +369,16 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -285,6 +313,11 @@ class EsphomeNativeApiConnection extends EventEmitter {
+         message.setDumpConfig(dumpConfig);
+         this.sendMessage(message);
+     }
++    subscribeBluetoothConnectionsFreeService() {
++        if (!this.connected) throw new Error(`Not connected`);
++        if (!this.authorized) throw new Error(`Not authorized`);
++        this.sendMessage(new pb.SubscribeBluetoothConnectionsFreeRequest());
++    }
+     cameraImageService(single = true, stream = false) {
+         if (!this.connected) throw new Error(`Not connected`);
+         if (!this.authorized) throw new Error(`Not authorized`);
+@@ -341,7 +374,32 @@ class EsphomeNativeApiConnection extends EventEmitter {
      async connectBluetoothDeviceService(address, addressType) {
          if (!this.connected) throw new Error(`Not connected`);
          if (!this.authorized) throw new Error(`Not authorized`);
@@ -77,19 +89,6 @@ index 7c2ef1b..eeca34f 100644
 +        const message = new pb.BluetoothDeviceRequest();
 +        message.setAddress(address);
 +        message.setRequestType(pb.BluetoothDeviceRequestType.BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITH_CACHE);
-         if(addressType != undefined) {
-             message.setHasAddressType(true);
-             message.setAddressType(addressType);
-@@ -352,6 +389,34 @@ class EsphomeNativeApiConnection extends EventEmitter {
-             10
-         );
-     }
-+    async connectBluetoothDeviceServiceWithoutCache(address, addressType) {
-+        if (!this.connected) throw new Error(`Not connected`);
-+        if (!this.authorized) throw new Error(`Not authorized`);
-+        const message = new pb.BluetoothDeviceRequest();
-+        message.setAddress(address);
-+        message.setRequestType(pb.BluetoothDeviceRequestType.BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITHOUT_CACHE);
 +        if(addressType != undefined) {
 +            message.setHasAddressType(true);
 +            message.setAddressType(addressType);
@@ -100,6 +99,19 @@ index 7c2ef1b..eeca34f 100644
 +            10
 +        );
 +    }
++    async connectBluetoothDeviceServiceWithoutCache(address, addressType) {
++        if (!this.connected) throw new Error(`Not connected`);
++        if (!this.authorized) throw new Error(`Not authorized`);
++        const message = new pb.BluetoothDeviceRequest();
++        message.setAddress(address);
++        message.setRequestType(pb.BluetoothDeviceRequestType.BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITHOUT_CACHE);
+         if(addressType != undefined) {
+             message.setHasAddressType(true);
+             message.setAddressType(addressType);
+@@ -352,6 +410,18 @@ class EsphomeNativeApiConnection extends EventEmitter {
+             10
+         );
+     }
 +    async clearBluetoothDeviceCacheService(address) {
 +        if (!this.connected) throw new Error(`Not connected`);
 +        if (!this.authorized) throw new Error(`Not authorized`);
@@ -115,7 +127,7 @@ index 7c2ef1b..eeca34f 100644
      async disconnectBluetoothDeviceService(address) {
          if (!this.connected) throw new Error(`Not connected`);
          if (!this.authorized) throw new Error(`Not authorized`);
-@@ -396,23 +461,43 @@ class EsphomeNativeApiConnection extends EventEmitter {
+@@ -396,23 +466,43 @@ class EsphomeNativeApiConnection extends EventEmitter {
          const message = new pb.BluetoothGATTGetServicesRequest([address]);
  
          const servicesList = [];
@@ -198,28 +210,36 @@ index 734c0fc..2aca3f6 100644
      98: 'TextStateResponse',
      99: 'TextCommandRequest'
 diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
-index a07678d..ed9f403 100644
+index a07678d..0150dcd 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/utils/noiseFrameHelper.js
-@@ -67,6 +67,10 @@ class NoiseFrameHelper extends FrameHelper {
+@@ -67,6 +67,14 @@ class NoiseFrameHelper extends FrameHelper {
                          const message = this.deserialize(
                              this.decryptor.DecryptWithAd([], frame)
                          );
 +                        if (message && message.__unknownMessageId != null) {
-+                            this.emit("unknownMessage", message.__unknownMessageId);
++                            this.emit("unknownMessage", {
++                                id: message.__unknownMessageId,
++                                length: message.length,
++                                bytes: message.__unknownBytes || ""
++                            });
 +                            continue;
 +                        }
                          this.emit("message", message);
                  }
              }
-@@ -128,6 +132,13 @@ class NoiseFrameHelper extends FrameHelper {
+@@ -127,7 +135,16 @@ class NoiseFrameHelper extends FrameHelper {
+         if (buffer.length < 4) return null;
          const messageId = (buffer[0] << 8) | buffer[1];
          const messageLength = (buffer[2] << 8) | buffer[3];
-         const message = this.buildMessage(messageId, buffer.subarray(4, messageLength + 4));
+-        const message = this.buildMessage(messageId, buffer.subarray(4, messageLength + 4));
++        const raw = buffer.subarray(4, messageLength + 4);
++        const message = this.buildMessage(messageId, raw);
 +        // Unknown/unhandled message IDs must be skipped safely (do not crash the stream parser).
 +        if (!message) {
 +            return {
 +                __unknownMessageId: messageId,
++                __unknownBytes: raw.subarray(0, 16).toString('hex'),
 +                length: messageLength + 4,
 +            };
 +        }
@@ -227,29 +247,37 @@ index a07678d..ed9f403 100644
          return message;
      }
 diff --git a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
-index 8bb8dfe..f4d2020 100644
+index 8bb8dfe..84ba944 100644
 --- a/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
 +++ b/node_modules/@2colors/esphome-native-api/lib/utils/plaintextFrameHelper.js
-@@ -43,6 +43,13 @@ class PlaintextFrameHelper extends FrameHelper {
+@@ -42,7 +42,16 @@ class PlaintextFrameHelper extends FrameHelper {
+         if (messageLength + offset > buffer.length)
              return null;
  
-         const message = this.buildMessage(messageId, buffer.subarray(offset, messageLength + offset));
+-        const message = this.buildMessage(messageId, buffer.subarray(offset, messageLength + offset));
++        const raw = buffer.subarray(offset, messageLength + offset);
++        const message = this.buildMessage(messageId, raw);
 +        // Unknown/unhandled message IDs must be skipped safely (do not crash the stream parser).
 +        if (!message) {
 +            return {
 +                __unknownMessageId: messageId,
++                __unknownBytes: raw.subarray(0, 16).toString('hex'),
 +                length: messageLength + offset,
 +            };
 +        }
          message.length = messageLength + offset;
          return message;
      }
-@@ -54,6 +61,10 @@ class PlaintextFrameHelper extends FrameHelper {
+@@ -54,6 +63,14 @@ class PlaintextFrameHelper extends FrameHelper {
          try {
              while ((message = this.deserialize(this.buffer))) {
                  this.buffer = this.buffer.slice(message.length);
 +                if (message.__unknownMessageId != null) {
-+                    this.emit("unknownMessage", message.__unknownMessageId);
++                    this.emit("unknownMessage", {
++                        id: message.__unknownMessageId,
++                        length: message.length,
++                        bytes: message.__unknownBytes || ""
++                    });
 +                    continue;
 +                }
                  this.emit("message", message);
