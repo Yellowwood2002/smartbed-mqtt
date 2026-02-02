@@ -131,8 +131,20 @@ export class BLEDevice implements IBLEDevice {
   
   // Bound method handler for connection responses - stable reference for listener management
   private handleConnectionResponse = (data: { address: number; connected: boolean }) => {
-    if (this.address !== data.address || this.connected === data.connected) return;
-    void this.connect();
+    if (this.address !== data.address) return;
+    if (this.connected === data.connected) return;
+
+    // IMPORTANT:
+    // Do NOT auto-call connect() here.
+    // ESPHome BLE proxy can emit connection responses while already CONNECTING/ESTABLISHED.
+    // Auto-connecting causes repeated "Connection request ignored" messages and can trigger ESP-IDF
+    // errors like GATT_BUSY (ConfigureMTU busy) and spurious disconnects.
+    this.connected = data.connected;
+    if (!data.connected) {
+      // If we got disconnected, clear cached services so the next explicit connect/retry will re-discover.
+      this.servicesList = undefined;
+      this.serviceCache = {};
+    }
   };
   
   // Cleanup method to remove all listeners

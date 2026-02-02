@@ -27,6 +27,8 @@ export class ESPConnection implements IESPConnection {
   async reconnect(): Promise<void> {
     this.disconnect();
     logInfo('[ESPHome] Reconnecting...');
+    // Give the proxy a moment to tear down the prior API session/subscription.
+    await wait(750);
     this.connections = await Promise.all(this.proxies.map((proxy) => connect(new Connection(proxy))));
   }
 
