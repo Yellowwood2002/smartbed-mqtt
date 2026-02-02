@@ -282,7 +282,7 @@ export class BLEDevice implements IBLEDevice {
         const raceProxyLogsToAbort = (label: string) => {
           // Only effective if connect.ts has subscribed to proxy logs (LOG_LEVEL debug/trace).
           let cleanup = () => {};
-          const promise = new Promise<never>((_resolve, reject) => {
+          const promise = new Promise<any>((resolve, reject) => {
             const handler = (msg: any) => {
               const line = String(msg?.message ?? '').trim();
               if (!line) return;
@@ -292,6 +292,23 @@ export class BLEDevice implements IBLEDevice {
               const lower = line.toLowerCase();
               // Proxy explicitly tells us it ignored the request. Waiting for connect timeout wastes time.
               if (lower.includes('connection request ignored')) {
+                // Special-case: if the proxy says ESTABLISHED, we're already connected and should NOT
+                // force a disconnect/reconnect loop. Treat as success and short-circuit.
+                if (lower.includes('state: established')) {
+                  (this as any).__bleDiag = {
+                    ...(this as any).__bleDiag,
+                    lastIgnoredEstablishedAt: Date.now(),
+                    lastIgnoredEstablishedLine: line,
+                    lastIgnoredEstablishedAttempt: label,
+                  };
+                  resolve({
+                    connected: true,
+                    error: 0,
+                    mtu: undefined,
+                    __fromProxyIgnoredEstablished: true,
+                  });
+                  return;
+                }
                 const nextCount = (ignoredConnectsByDeviceKey.get(this.deviceKey) ?? 0) + 1;
                 ignoredConnectsByDeviceKey.set(this.deviceKey, nextCount);
                 this.ignoredConnectCount = nextCount;
