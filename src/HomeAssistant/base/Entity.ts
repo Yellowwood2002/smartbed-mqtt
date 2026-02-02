@@ -31,7 +31,20 @@ export class Entity implements IAvailable {
     this.entityTag = safeId(entityConfig.description);
     this.uniqueId = `${safeId(deviceData.device.name)}_${this.entityTag}`;
     this.baseTopic = `${deviceData.deviceTopic}/${this.entityTag}`;
-    this.availabilityTopic = `${this.baseTopic}/status`;
+    /**
+     * Availability strategy (robust across MQTT reconnects):
+     *
+     * Use the add-on's global status topic as entity availability.
+     *
+     * Why:
+     * - Per-entity availability topics were not retained.
+     * - After Mosquitto/HA reconnects, entities like "BLE Diagnostics" could become `unavailable`
+     *   and stay that way because they don't publish state frequently.
+     *
+     * This topic already has an MQTT Last Will configured in `connectToMQTT`, so it correctly
+     * flips to `offline` on crashes and to `online` on clean connects.
+     */
+    this.availabilityTopic = `smartbedmqtt/status`;
     this.mqtt.subscribe('homeassistant/status');
     this.mqtt.on('homeassistant/status', (message) => {
       if (message === ONLINE) setTimeout(() => this.publishDiscovery(), seconds(15));
@@ -72,6 +85,7 @@ export class Entity implements IAvailable {
   }
 
   private sendAvailability(availability: string) {
-    setTimeout(() => this.mqtt.publish(this.availabilityTopic, availability), 500);
+    // Retain so HA restores availability correctly after reconnects.
+    setTimeout(() => this.mqtt.publish(this.availabilityTopic, availability, { retain: true, qos: 1 }), 500);
   }
 }
