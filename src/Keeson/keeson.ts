@@ -30,8 +30,15 @@ type ControllerStats = {
   lastSuccessAt?: number;
   lastFailureAt?: number;
   lastError?: string;
+  recentFailureAts?: number[]; // rolling timestamps (ms) for last 24h
 };
-type ControllerPrefsFile = Record<string, Record<string, ControllerStats>>; // bedKey -> controllerKey -> stats
+type BedPref = {
+  _meta?: {
+    pinnedController?: string; // controllerKey
+  };
+  controllers: Record<string, ControllerStats>;
+};
+type ControllerPrefsFile = Record<string, BedPref>;
 let controllerPrefsLoaded = false;
 let controllerPrefs: ControllerPrefsFile = {};
 
@@ -41,7 +48,19 @@ const ensureControllerPrefsLoaded = () => {
   try {
     const raw = readFileSync(CONTROLLER_PREFS_PATH, 'utf8');
     const json = JSON.parse(raw);
-    if (json && typeof json === 'object') controllerPrefs = json as ControllerPrefsFile;
+    if (json && typeof json === 'object') {
+      // Backward compatible: older format was bedKey -> controllerKey -> stats
+      const normalized: ControllerPrefsFile = {};
+      for (const [bedKey, v] of Object.entries(json as any)) {
+        if (!v || typeof v !== 'object') continue;
+        if ((v as any).controllers && typeof (v as any).controllers === 'object') {
+          normalized[bedKey] = v as any;
+          continue;
+        }
+        normalized[bedKey] = { controllers: v as any };
+      }
+      controllerPrefs = normalized;
+    }
     logDebug(`[Keeson] Loaded controller prefs from ${CONTROLLER_PREFS_PATH}`);
   } catch {
     // ok
@@ -73,13 +92,13 @@ const stableBedKeyFor = (device: any): string => {
 
 const getControllerStats = (bedKey: string, controllerKey: string): ControllerStats => {
   ensureControllerPrefsLoaded();
-  controllerPrefs[bedKey] = controllerPrefs[bedKey] || {};
-  controllerPrefs[bedKey][controllerKey] = controllerPrefs[bedKey][controllerKey] || {
+  controllerPrefs[bedKey] = controllerPrefs[bedKey] || { controllers: {} };
+  controllerPrefs[bedKey].controllers[controllerKey] = controllerPrefs[bedKey].controllers[controllerKey] || {
     successes: 0,
     failures: 0,
     consecutiveFailures: 0,
   };
-  return controllerPrefs[bedKey][controllerKey];
+  return controllerPrefs[bedKey].controllers[controllerKey];
 };
 
 const recordControllerSuccess = (bedKey: string, controllerMac: string) => {
@@ -88,6 +107,10 @@ const recordControllerSuccess = (bedKey: string, controllerMac: string) => {
   stats.successes += 1;
   stats.consecutiveFailures = 0;
   stats.lastSuccessAt = Date.now();
+  // Pin this controller as the "sticky" winner until it fails consecutively.
+  controllerPrefs[bedKey] = controllerPrefs[bedKey] || { controllers: {} };
+  controllerPrefs[bedKey]._meta = controllerPrefs[bedKey]._meta || {};
+  controllerPrefs[bedKey]._meta!.pinnedController = key;
   persistControllerPrefsNow();
 };
 
@@ -98,7 +121,25 @@ const recordControllerFailure = (bedKey: string, controllerMac: string, error: a
   stats.consecutiveFailures += 1;
   stats.lastFailureAt = Date.now();
   stats.lastError = (error?.message || String(error)).slice(0, 500);
+  // rolling 24h window for failures
+  const now = Date.now();
+  const windowMs = 24 * 60 * 60 * 1000;
+  stats.recentFailureAts = (stats.recentFailureAts || []).filter((t) => now - t < windowMs);
+  stats.recentFailureAts.push(now);
   persistControllerPrefsNow();
+};
+
+const getPinnedControllerKey = (bedKey: string): string | undefined => {
+  ensureControllerPrefsLoaded();
+  return controllerPrefs[bedKey]?._meta?.pinnedController;
+};
+
+const getRecentFailureCounts = (stats: ControllerStats) => {
+  const now = Date.now();
+  const arr = stats.recentFailureAts || [];
+  const last1h = arr.filter((t) => now - t < 60 * 60 * 1000).length;
+  const last24h = arr.filter((t) => now - t < 24 * 60 * 60 * 1000).length;
+  return { last1h, last24h };
 };
 
 const scoreController = (bedKey: string, bleDevice: IBLEDevice): number => {
@@ -116,6 +157,9 @@ const scoreController = (bedKey: string, bleDevice: IBLEDevice): number => {
   if (stats.consecutiveFailures > 0) score -= Math.min(90, stats.consecutiveFailures * 30);
   // Slight penalty if it's generally failing more than succeeding.
   if (stats.failures > stats.successes + 2) score -= 15;
+  // Penalize frequent recent failures
+  const recent = getRecentFailureCounts(stats);
+  score -= Math.min(40, recent.last1h * 10);
   return score;
 };
 
@@ -297,6 +341,7 @@ const setupDeviceWithRetry = async (
             status: 'connecting',
             bed: bedName,
             bedKey,
+            pinnedController: getPinnedControllerKey(bedKey) ?? null,
             attempting: { name, mac, rssi: bleDevice.advertisement?.rssi },
             order: candidates.map((c) => ({
               name: c.name,
@@ -313,9 +358,11 @@ const setupDeviceWithRetry = async (
             status: 'connected',
             bed: bedName,
             bedKey,
+            pinnedController: getPinnedControllerKey(bedKey) ?? null,
             connectedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
             ble: (bleDevice as any).__bleDiag,
             controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
+            controllerFailures: getRecentFailureCounts(getControllerStats(bedKey, controllerKeyFor(mac))),
           });
           return;
         } catch (error: any) {
@@ -326,10 +373,12 @@ const setupDeviceWithRetry = async (
             status: 'failed',
             bed: bedName,
             bedKey,
+            pinnedController: getPinnedControllerKey(bedKey) ?? null,
             failedVia: { name, mac, rssi: bleDevice.advertisement?.rssi },
             error: msg,
             ble: (bleDevice as any).__bleDiag,
             controllerStats: getControllerStats(bedKey, controllerKeyFor(mac)),
+            controllerFailures: getRecentFailureCounts(getControllerStats(bedKey, controllerKeyFor(mac))),
           });
           // If this smells like a GATT/services timeout, try the next candidate controller immediately.
           if (isGattServicesTimeout(error)) {
@@ -463,7 +512,20 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
   for (const [device, candidates] of grouped.entries()) {
     const bedKey = stableBedKeyFor(device);
     // Order candidates by success/failure history first, RSSI second.
-    const sorted = [...candidates].sort((a, b) => scoreController(bedKey, b) - scoreController(bedKey, a));
+    const scored = [...candidates]
+      .map((c) => ({ c, score: scoreController(bedKey, c), key: controllerKeyFor(c.mac) }))
+      .sort((a, b) => b.score - a.score);
+
+    // Sticky selection: if a pinned controller exists and hasn't failed twice consecutively, prefer it.
+    const pinnedKey = getPinnedControllerKey(bedKey);
+    const pinnedCandidate =
+      pinnedKey ? scored.find((x) => x.key === pinnedKey && getControllerStats(bedKey, x.key).consecutiveFailures < 2) : undefined;
+
+    const sorted = (pinnedCandidate
+      ? [pinnedCandidate, ...scored.filter((x) => x !== pinnedCandidate)]
+      : scored
+    ).map((x) => x.c);
+
     const chosen = sorted[0];
     const fallback = sorted[1];
 
@@ -491,24 +553,24 @@ export const keeson = async (mqtt: IMQTTConnection, esphome: IESPConnection): Pr
       .filter((check) => check)[0];
 
     if (controllerBuilder === undefined) {
-    const {
-      advertisement: { manufacturerDataList, serviceUuidsList },
-    } = supportedCandidate;
+      const {
+        advertisement: { manufacturerDataList, serviceUuidsList },
+      } = supportedCandidate;
       logWarn(
         '[Keeson] Device not supported, please contact me on Discord',
-      supportedCandidate.name,
-      JSON.stringify({
-        name: supportedCandidate.name,
-        address: supportedCandidate.address,
-        manufacturerDataList,
-        serviceUuidsList,
-      })
+        supportedCandidate.name,
+        JSON.stringify({
+          name: supportedCandidate.name,
+          address: supportedCandidate.address,
+          manufacturerDataList,
+          serviceUuidsList,
+        })
       );
       continue;
     }
 
     // Setup each logical bed in parallel with retry logic + linked-controller failover
-  setupPromises.push(setupDeviceWithRetry(mqtt, esphome, sorted, device, controllerBuilder));
+    setupPromises.push(setupDeviceWithRetry(mqtt, esphome, sorted, device, controllerBuilder));
   }
 
   // Wait for all devices to be set up (they will retry forever if needed)

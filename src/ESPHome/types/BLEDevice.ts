@@ -18,6 +18,8 @@ const connectInFlightByDeviceKey = new Map<DeviceKey, Promise<void>>();
 // Per-device cooldown after hard ESP-IDF failures (status=133 / reason 0x100 patterns).
 const cooldownUntilByDeviceKey = new Map<DeviceKey, number>();
 const ignoredConnectsByDeviceKey = new Map<DeviceKey, number>();
+// Slow-connect protection: temporarily force without-cache if connects are slow/ignored/time out.
+const forceWithoutCacheUntilByDeviceKey = new Map<DeviceKey, number>();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -148,6 +150,30 @@ export class BLEDevice implements IBLEDevice {
     
     // Add our listener
     this.connection.on('message.BluetoothDeviceConnectionResponse', this.connectionResponseListener);
+
+    // Best-effort: observe proxy disconnect reasons for this device (only if SubscribeLogsResponse is available).
+    // This helps expose disconnect reason codes (0x08, 0x16, 0x100, etc.) in the HA diagnostics sensor.
+    const proxyMac = formatMacForProxyLog(this.mac);
+    const proxyLogHandler = (msg: any) => {
+      const line = String(msg?.message ?? '').trim();
+      if (!line) return;
+      if (!line.includes(`[${proxyMac}]`)) return;
+      const lower = line.toLowerCase();
+      if (lower.includes('disconnect') || lower.includes('close')) {
+        const m = line.match(/reason\s*=?\s*(0x[0-9a-f]+)/i);
+        (this as any).__bleDiag = {
+          ...(this as any).__bleDiag,
+          lastDisconnectAt: Date.now(),
+          lastDisconnectLine: line,
+          ...(m?.[1] ? { lastDisconnectReason: m[1].toLowerCase() } : {}),
+        };
+      }
+    };
+    try {
+      this.connection.on('message.SubscribeLogsResponse', proxyLogHandler);
+      // Store for cleanup
+      (this as any).__proxyLogHandler = proxyLogHandler;
+    } catch {}
   }
   
   // Bound method handler for connection responses - stable reference for listener management
@@ -179,12 +205,28 @@ export class BLEDevice implements IBLEDevice {
       this.connection.off('message.BluetoothGATTNotifyDataResponse', listener);
     }
     this.notifyDataListeners.clear();
+
+    // Remove proxy log handler if present
+    try {
+      const h = (this as any).__proxyLogHandler;
+      if (h) this.connection.off('message.SubscribeLogsResponse', h);
+    } catch {}
     
     // Remove from registry
     const registered = deviceRegistry.get(this.deviceKey);
     if (registered === this) {
       deviceRegistry.delete(this.deviceKey);
     }
+  }
+
+  // Used by process telemetry diagnostics
+  static getGlobalBleCounters() {
+    return {
+      deviceRegistrySize: deviceRegistry.size,
+      connectInFlightSize: connectInFlightByDeviceKey.size,
+      cooldownSize: cooldownUntilByDeviceKey.size,
+      forceWithoutCacheSize: forceWithoutCacheUntilByDeviceKey.size,
+    };
   }
 
   pair = async () => {
@@ -208,11 +250,16 @@ export class BLEDevice implements IBLEDevice {
     if (this.connectingPromise) return this.connectingPromise;
 
     const connectPromise = (async () => {
+      const connectStartedAt = Date.now();
       try {
         ensurePrefsLoaded();
         const advAddressType = this.advertisement.addressType;
         const pref = connectPrefsByDeviceKey.get(this.deviceKey) ?? {};
         const proxyMac = formatMacForProxyLog(this.mac);
+
+        // If we've recently seen slow connects or ignored requests, force without-cache for a while.
+        const forceUntil = forceWithoutCacheUntilByDeviceKey.get(this.deviceKey) ?? 0;
+        const forceWithoutCache = Date.now() < forceUntil;
 
         const withTimeout = async <T>(label: string, ms: number, fn: () => Promise<T>): Promise<T> => {
           const startedAt = Date.now();
@@ -312,7 +359,7 @@ export class BLEDevice implements IBLEDevice {
         };
 
         const attempts: Array<[boolean, string]> = [];
-        const firstWithoutCache = pref.withoutCache === true;
+        const firstWithoutCache = forceWithoutCache ? true : pref.withoutCache === true;
         attempts.push([firstWithoutCache, 'preferred']);
         attempts.push([!firstWithoutCache, 'flip-cache']);
 
@@ -331,6 +378,22 @@ export class BLEDevice implements IBLEDevice {
             );
           } catch (e) {
             lastError = e;
+            const msg = (e as any)?.message || String(e);
+            const lower = String(msg).toLowerCase();
+            if (
+              lower.includes('proxy ignored connection request') ||
+              lower.includes('timeout preferred') ||
+              lower.includes('timeout flip-cache')
+            ) {
+              // Force without-cache for 15 minutes after ignored/timeout patterns.
+              forceWithoutCacheUntilByDeviceKey.set(this.deviceKey, Date.now() + 15 * 60_000);
+              (this as any).__bleDiag = {
+                ...(this as any).__bleDiag,
+                forceWithoutCacheUntil: forceWithoutCacheUntilByDeviceKey.get(this.deviceKey),
+                lastForceWithoutCacheReason: msg,
+                lastForceWithoutCacheAt: Date.now(),
+              };
+            }
             // Best-effort cleanup between attempts; helps when proxy gets stuck in an intermediate state.
             try {
               await this.connection.disconnectBluetoothDeviceService(this.address);
@@ -375,6 +438,11 @@ export class BLEDevice implements IBLEDevice {
         }
 
         this.connected = true;
+        const connectDurationMs = Date.now() - connectStartedAt;
+        if (connectDurationMs > 8000) {
+          // Slow connect: force without-cache for a while going forward.
+          forceWithoutCacheUntilByDeviceKey.set(this.deviceKey, Date.now() + 15 * 60_000);
+        }
         (this as any).__bleDiag = {
           ...(this as any).__bleDiag,
           deviceKey: this.deviceKey,
@@ -387,6 +455,8 @@ export class BLEDevice implements IBLEDevice {
           errorCode,
           ignoredConnects: ignoredConnectsByDeviceKey.get(this.deviceKey) ?? this.ignoredConnectCount,
           cooldownUntil: cooldownUntilByDeviceKey.get(this.deviceKey) ?? 0,
+          forceWithoutCacheUntil: forceWithoutCacheUntilByDeviceKey.get(this.deviceKey) ?? 0,
+          connectDurationMs,
           lastConnectedAt: Date.now(),
         };
         logInfo(`[BLE] Successfully connected to device ${this.name} (${this.mac}) (mtu=${mtu ?? 'n/a'})`);
@@ -398,6 +468,17 @@ export class BLEDevice implements IBLEDevice {
           (error?.code ? `code=${String(error.code)}` : '') ||
           String(error);
         logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, msg);
+        // After failures that look like proxy/stack instability, temporarily force without-cache.
+        const lowerMsg = String(msg).toLowerCase();
+        if (
+          lowerMsg.includes('proxy ignored connection request') ||
+          lowerMsg.includes('timeout') ||
+          lowerMsg.includes('status=133') ||
+          lowerMsg.includes('0x100') ||
+          lowerMsg.includes('gatt_busy')
+        ) {
+          forceWithoutCacheUntilByDeviceKey.set(this.deviceKey, Date.now() + 15 * 60_000);
+        }
         const lower = String(msg).toLowerCase();
         if (lower.includes('status=133') || lower.includes('0x100') || lower.includes('gatt_busy') || lower.includes('write after end')) {
           const until = Date.now() + 3_000;
@@ -409,6 +490,7 @@ export class BLEDevice implements IBLEDevice {
         this.connected = false;
         throw error;
       } finally {
+        (this as any).__bleDiag = { ...(this as any).__bleDiag, lastConnectAttemptEndedAt: Date.now() };
         // Clear the promise once connection succeeds or fails
         this.connectingPromise = null;
       }
@@ -452,6 +534,12 @@ export class BLEDevice implements IBLEDevice {
         );
         const { servicesList } = await this.connection.listBluetoothGATTServicesService(this.address);
         this.servicesList = servicesList;
+        (this as any).__bleDiag = {
+          ...(this as any).__bleDiag,
+          lastServicesDurationMs: Date.now() - startedAt,
+          lastServicesCount: servicesList.length,
+          lastServicesAt: Date.now(),
+        };
         logDebug(
           `[BLE] GATT services ready for ${this.name} (${this.mac}) in ${Date.now() - startedAt}ms (services=${servicesList.length})`
         );

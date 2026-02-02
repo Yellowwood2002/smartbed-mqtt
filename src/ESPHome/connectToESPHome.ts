@@ -55,6 +55,9 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
             // IMPORTANT: ensure the socket is actually closed. Otherwise we can leave behind
             // a half-open API session that still holds the BLE subscription, and the proxy rejects
             // new clients with "Only one API subscription is allowed at a time".
+            try {
+              (failedConnection as any).unsubscribeBluetoothAdvertisementService?.();
+            } catch {}
             failedConnection.disconnect();
           } catch {}
           try {
@@ -91,6 +94,9 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
           failedConnection = newConnection;
           // Best-effort close now (don't wait for the next retry tick).
           try {
+            try {
+              (failedConnection as any).unsubscribeBluetoothAdvertisementService?.();
+            } catch {}
             failedConnection.disconnect();
           } catch {}
           throw error;

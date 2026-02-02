@@ -1,0 +1,27 @@
+## Example Home Assistant automation (YAML mode)
+##
+## Purpose:
+## - Self-heal SmartbedMQTT when BLE goes unhealthy for a sustained period.
+## - Optional: reboot the BLE proxy via your existing power/relay automation instead of touching firmware.
+##
+## Notes:
+## - Update the entity_id below to your actual "Purple Bed BLE Diagnostics" sensor entity.
+## - Update the addon slug if your add-on slug differs.
+
+automation:
+  - id: smartbedmqtt_selfheal_restart_addon_on_ble_unhealthy
+    alias: "SmartbedMQTT: restart add-on if BLE unhealthy"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.purple_bed_ble_diagnostics
+        for: "00:03:00"
+    condition:
+      - condition: template
+        value_template: >
+          {{ state_attr('sensor.purple_bed_ble_diagnostics','status') not in ['connected'] }}
+    action:
+      - service: hassio.addon_restart
+        data:
+          addon: 81a53a0c_smartbed-mqtt
+

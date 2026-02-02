@@ -20,6 +20,7 @@ import { richmat } from 'Richmat/richmat';
 import { scanner } from 'Scanner/scanner';
 import { sleeptracker } from 'Sleeptracker/sleeptracker';
 import { solace } from 'Solace/solace';
+import { startProcessTelemetry } from 'Diagnostics/processTelemetry';
 
 let exiting = false;
 const processExit = (exitCode?: number) => {
@@ -217,11 +218,13 @@ const start = async () => {
   while (true) {
     let mqtt: any = null;
     let esphome: any = null;
+    let stopTelemetry: (() => void) | null = null;
     
     try {
       // Reconnect MQTT if needed (self-healing)
       mqtt = await connectToMQTT();
       healthMonitor.init(mqtt, type);
+      stopTelemetry = startProcessTelemetry(mqtt, type);
       
       // Reconnect ESPHome if needed (self-healing)
       esphome = await connectToESPHome();
@@ -261,6 +264,9 @@ const start = async () => {
           return;
       }
     } catch (error: any) {
+      try {
+        stopTelemetry?.();
+      } catch {}
       const errorMessage = error?.message || String(error);
       const errorCode = error?.code || '';
       const isSocketError = errorCode === 'ECONNRESET' || 

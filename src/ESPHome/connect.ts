@@ -89,6 +89,14 @@ export const connect = (connection: Connection) => {
 
         // After the handshake is complete, attach persistent error logging.
         connection.on('error', socketErrorHandler);
+
+        // Subscription hygiene:
+        // If Supervisor restarts us mid-stream, the proxy can sometimes still consider an old subscription active.
+        // Best-effort unsubscribe on fresh connect before we (re)subscribe elsewhere.
+        try {
+          (connection as any).unsubscribeBluetoothAdvertisementService?.();
+        } catch {}
+
         connection.on('unknownMessage', (id: any) => {
           const payload = typeof id === 'object' ? id : { id };
           const msgId = payload?.id ?? id;
