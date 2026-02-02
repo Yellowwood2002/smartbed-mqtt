@@ -84,15 +84,26 @@ export const retryWithBackoff = async <T>(
 export const isSocketOrBLETimeoutError = (error: any): boolean => {
   const errorMessage = error?.message || String(error);
   const errorCode = error?.code || '';
+  const lower = String(errorMessage).toLowerCase();
   
   return (
     errorCode === 'ECONNRESET' ||
     errorCode === 'ECONNREFUSED' ||
     errorCode === 'ETIMEDOUT' ||
     errorMessage.includes('ECONNRESET') ||
-    errorMessage.includes('socket') ||
-    errorMessage.includes('reset') ||
-    errorMessage.includes('timeout') ||
+    lower.includes('socket') ||
+    lower.includes('reset') ||
+    lower.includes('timeout') ||
+    // ESPHome BLE proxy / ESP-IDF failure patterns
+    lower.includes('status=133') ||
+    lower.includes('reason=0x100') ||
+    lower.includes('reason 0x100') ||
+    lower.includes('gatt_busy') ||
+    // Our higher-level fast-fail messages
+    lower.includes('proxy ignored connection request') ||
+    lower.includes('proxy reported hard ble failure') ||
+    lower.includes('write after end') ||
+    // Known message waits (older library wording)
     errorMessage.includes('BluetoothDeviceConnectionResponse') ||
     errorMessage.includes('BluetoothGATTGetServicesDoneResponse')
   );

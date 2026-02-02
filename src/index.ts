@@ -6,6 +6,9 @@ import { wait } from '@utils/wait';
 import { getType } from '@utils/options';
 import { connectToESPHome } from 'ESPHome/connectToESPHome';
 import { healthMonitor } from 'Diagnostics/HealthMonitor';
+import { Button } from '@ha/Button';
+import { buildMQTTDeviceData } from 'Common/buildMQTTDeviceData';
+import { getRootOptions } from '@utils/options';
 import { ergomotion } from 'ErgoMotion/ergomotion';
 import { ergowifi } from 'ErgoWifi/ergowifi';
 import { keeson } from 'Keeson/keeson';
@@ -225,6 +228,33 @@ const start = async () => {
       mqtt = await connectToMQTT();
       healthMonitor.init(mqtt, type);
       stopTelemetry = startProcessTelemetry(mqtt, type);
+
+      // HA Buttons (MQTT discovery)
+      // These show up as button entities in HA and directly trigger recovery actions.
+      const opsDeviceData = buildMQTTDeviceData(
+        { friendlyName: 'SmartbedMQTT', name: `addon:${type}`, address: 'smartbedmqtt', ids: ['smartbedmqtt', `smartbedmqtt:${type}`] },
+        'SmartbedMQTT'
+      );
+
+      // Soft reconnect: triggers the self-healing loop to reconnect ESPHome/MQTT without a Supervisor restart.
+      new Button(mqtt, opsDeviceData, { description: 'Reconnect BLE (soft)', category: 'diagnostic', icon: 'mdi:refresh' }, async () => {
+        healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual reconnect (HA button)' });
+      });
+
+      // Hard restart: exits so Supervisor restarts the add-on.
+      new Button(mqtt, opsDeviceData, { description: 'Restart add-on (Supervisor)', category: 'diagnostic', icon: 'mdi:restart' }, async () => {
+        healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual supervisor restart (HA button)' });
+        setTimeout(() => processExit(1), 750);
+      });
+
+      // Request proxy power-cycle (handled by HA automation listening to smartbed-mqtt/proxy/<host>/command).
+      const proxies = (getRootOptions()?.bleProxies ?? []) as Array<any>;
+      const proxyHosts = proxies.map((p) => p?.host).filter(Boolean);
+      new Button(mqtt, opsDeviceData, { description: 'Reboot BLE Proxy (relay)', category: 'diagnostic', icon: 'mdi:power-cycle' }, async () => {
+        for (const host of proxyHosts.length ? proxyHosts : ['10.0.0.69']) {
+          mqtt.publish(`smartbed-mqtt/proxy/${host}/command`, 'REBOOT');
+        }
+      });
       
       // Reconnect ESPHome if needed (self-healing)
       esphome = await connectToESPHome();

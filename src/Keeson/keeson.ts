@@ -2,6 +2,7 @@ import { IMQTTConnection } from '@mqtt/IMQTTConnection';
 import { JsonSensor } from '@ha/JsonSensor';
 import { logDebug, logError, logInfo, logWarn, logWarnDedup } from '@utils/logger';
 import { retryWithBackoff, isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 import { setupDeviceInfoSensor } from 'BLE/setupDeviceInfoSensor';
 import { buildMQTTDeviceData } from 'Common/buildMQTTDeviceData';
 import { IESPConnection } from 'ESPHome/IESPConnection';
@@ -354,6 +355,8 @@ const setupDeviceWithRetry = async (
           await connectToDevice(mqtt, bleDevice, device, controllerBuilder);
           logInfo(`[Keeson] Successfully connected to '${bedName}' via ${name} (${mac})`);
           recordControllerSuccess(bedKey, mac);
+          // Feed central HealthMonitor so it can trigger reconnect/proxy reboot decisions.
+          healthMonitor.recordBleSuccess(bedName);
           diag.setState({
             status: 'connected',
             bed: bedName,
@@ -369,6 +372,7 @@ const setupDeviceWithRetry = async (
           lastError = error;
           const msg = error?.message || String(error);
           recordControllerFailure(bedKey, mac, error);
+          healthMonitor.recordBleFailure(bedName, error, (bleDevice as any)?.host);
           diag.setState({
             status: 'failed',
             bed: bedName,
