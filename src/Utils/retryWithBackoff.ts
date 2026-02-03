@@ -64,7 +64,8 @@ export const retryWithBackoff = async <T>(
         onRetry(error, attempt, currentDelay);
       } else {
         const errorMessage = error?.message || String(error);
-        logWarn(`[Retry] Attempt ${attempt} failed, retrying in ${currentDelay / 1000}s:`, errorMessage);
+        // NOTE: pino doesn't reliably print extra args unless you use format specifiers.
+        logWarn(`[Retry] Attempt ${attempt} failed, retrying in ${currentDelay / 1000}s: ${errorMessage}`);
       }
 
       // Wait before retrying
@@ -103,6 +104,14 @@ export const isSocketOrBLETimeoutError = (error: any): boolean => {
     lower.includes('proxy ignored connection request') ||
     lower.includes('proxy reported hard ble failure') ||
     lower.includes('write after end') ||
+    // ESPHome API framing/protocol corruption (Noise/plaintext mismatch or garbage bytes).
+    lower.includes('unknown protocol selected by server') ||
+    lower.includes('bad format. expected 1') ||
+    lower.includes('bad format') ||
+    // Common when the underlying ESPHome API socket is dead but calls continue.
+    lower.includes('not authorized') ||
+    lower.includes('not connected') ||
+    lower.includes('socket is not connected') ||
     // Known message waits (older library wording)
     errorMessage.includes('BluetoothDeviceConnectionResponse') ||
     errorMessage.includes('BluetoothGATTGetServicesDoneResponse')

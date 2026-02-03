@@ -93,7 +93,8 @@ class HealthMonitor {
             const status = JSON.parse(message);
             this.proxyStatus.set(proxy.host, status);
           } catch (e) {
-            logWarn(`[Health] Error parsing proxy status for ${proxy.host}:`, e);
+            const msg = (e as any)?.message || String(e);
+            logWarn(`[Health] Error parsing proxy status for ${proxy.host}: ${msg}`);
           }
         });
       }
@@ -160,7 +161,15 @@ class HealthMonitor {
         if (proxyHost) {
           logWarn(`[Health] Requesting reboot of proxy ${proxyHost} due to repeated BLE failures.`);
           this.requestProxyReboot(proxyHost);
-          this.consecutiveBleFailures = 0; // Reset after requesting reboot
+          // Also force a SmartbedMQTT reconnect so we drop/recreate the ESPHome API session.
+          // Otherwise we can stay wedged even after the proxy power-cycle.
+          this.requestRestart({
+            kind: 'ble',
+            reason: `Proxy reboot requested after repeated BLE/socket failures (${this.consecutiveBleFailures})`,
+            deviceName,
+            error: message,
+          });
+          this.consecutiveBleFailures = 0; // Reset after escalating
         } else {
           this.requestRestart({
             kind: 'ble',

@@ -73,14 +73,31 @@ export const connect = (connection: Connection) => {
           : `[ESPHome] Connection error on ${connection.host} (code=${errorCode || 'n/a'}): ${errorMessage}`
       );
 
+      // Protocol framing / garbage-bytes state:
+      // When Noise/plaintext framing gets corrupted (or a half-open socket feeds junk),
+      // the library can emit errors like:
+      // - "Unknown protocol selected by server 114"
+      // - "Bad format. Expected 1 at the begin"
+      // These do NOT recover with retries inside the same Connection object.
+      const isProtocolGarbage =
+        lower.includes('unknown protocol selected by server') ||
+        lower.includes('bad format. expected 1') ||
+        lower.includes('bad format');
+
       // Critical wedged state:
       // "write after end" often means the underlying stream is dead but the process keeps running.
       // Request a controlled reconnect so the add-on self-heals without requiring a manual Supervisor restart.
-      if (errorCode === 'ERR_STREAM_WRITE_AFTER_END' || lower.includes('write after end')) {
+      if (
+        errorCode === 'ERR_STREAM_WRITE_AFTER_END' ||
+        lower.includes('write after end') ||
+        isProtocolGarbage
+      ) {
         try {
           healthMonitor.requestRestart({
             kind: 'ble',
-            reason: 'ESPHome socket write after end (forcing reconnect)',
+            reason: isProtocolGarbage
+              ? 'ESPHome protocol/framing error (forcing reconnect)'
+              : 'ESPHome socket write after end (forcing reconnect)',
             error: `${errorCode || 'ERR_STREAM_WRITE_AFTER_END'}: ${errorMessage}`,
           });
         } catch {}

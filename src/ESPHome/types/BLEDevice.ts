@@ -487,7 +487,9 @@ export class BLEDevice implements IBLEDevice {
           (typeof error === 'string' ? error : '') ||
           (error?.code ? `code=${String(error.code)}` : '') ||
           String(error);
-        logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}):`, msg);
+        // NOTE: pino doesn't reliably print "extra args" unless you use format specifiers.
+        // Always include the message in the primary string so it shows up in HA add-on logs.
+        logWarn(`[BLE] Failed to connect to device ${this.name} (${this.mac}): ${msg}`);
         // After failures that look like proxy/stack instability, temporarily force without-cache.
         const lowerMsg = String(msg).toLowerCase();
         if (
@@ -500,7 +502,17 @@ export class BLEDevice implements IBLEDevice {
           forceWithoutCacheUntilByDeviceKey.set(this.deviceKey, Date.now() + 15 * 60_000);
         }
         const lower = String(msg).toLowerCase();
-        if (lower.includes('status=133') || lower.includes('0x100') || lower.includes('gatt_busy') || lower.includes('write after end')) {
+        if (
+          lower.includes('status=133') ||
+          lower.includes('0x100') ||
+          lower.includes('gatt_busy') ||
+          lower.includes('write after end') ||
+          // Project memory: when the ESPHome API socket is dead, connect attempts can fail immediately.
+          // Treat these as retryable so HealthMonitor can trip and force a reconnect.
+          lower.includes('not connected') ||
+          lower.includes('not authorized') ||
+          lower.includes('socket is not connected')
+        ) {
           const until = Date.now() + 3_000;
           cooldownUntilByDeviceKey.set(this.deviceKey, until);
           (this as any).__bleDiag = { ...(this as any).__bleDiag, cooldownUntil: until, lastHardFailureAt: Date.now(), lastError: msg };

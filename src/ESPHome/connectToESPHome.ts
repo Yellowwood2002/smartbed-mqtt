@@ -112,9 +112,11 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
         onRetry: (error: any, attempt: number, delayMs: number) => {
           const errorMessage = error?.message || String(error);
           const errorCode = error?.code || '';
+          // NOTE: pino doesn't reliably print extra args unless you use format specifiers.
           logInfo(
-            `[ESPHome] Connection attempt ${attempt} to ${config.host}:${config.port || 6053} failed, retrying in ${delayMs / 1000}s:`,
-            errorCode || errorMessage
+            `[ESPHome] Connection attempt ${attempt} to ${config.host}:${config.port || 6053} failed, retrying in ${
+              delayMs / 1000
+            }s: ${errorCode || errorMessage}`
           );
         },
       }

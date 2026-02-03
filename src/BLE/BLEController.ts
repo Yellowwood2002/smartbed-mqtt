@@ -102,14 +102,25 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
         logInfo(`[BLE] Connected to device ${this.deviceData.device.name} for command execution`);
         return;
       } catch (error: any) {
-        logError(`[BLE] Failed to connect to device ${this.deviceData.device.name}`, error);
+        // NOTE: pass the error object as the first arg so pino prints stack/details.
+        logError({ err: error }, `[BLE] Failed to connect to device ${this.deviceData.device.name}`);
         healthMonitor.recordBleFailure(this.deviceData.device.name, error, this.proxyHost);
 
         // If the ESPHome API socket is broken (e.g. ECONNRESET / write-after-end), a local reconnect loop
         // is often not enough — we need to force the higher-level ESPHome reconnect.
         const code = error?.code || '';
         const msg = String(error?.message || error).toLowerCase();
-        if (code === 'ECONNRESET' || code === 'ERR_STREAM_WRITE_AFTER_END' || msg.includes('write after end')) {
+        const isDeadApiSocket =
+          code === 'ECONNRESET' ||
+          code === 'ERR_STREAM_WRITE_AFTER_END' ||
+          msg.includes('write after end') ||
+          msg.includes('not connected') ||
+          msg.includes('not authorized') ||
+          msg.includes('socket is not connected') ||
+          msg.includes('bad format') ||
+          msg.includes('unknown protocol selected by server');
+
+        if (isDeadApiSocket) {
           healthMonitor.requestRestart({
             kind: 'ble',
             reason: 'ESPHome socket error during command execution (forcing reconnect)',
