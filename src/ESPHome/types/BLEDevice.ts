@@ -32,6 +32,63 @@ const formatMacForProxyLog = (mac12hex: string) =>
     ?.join(':')
     .toUpperCase() ?? mac12hex;
 
+/**
+ * Wait for the underlying ESPHome API connection to be ready.
+ *
+ * Why:
+ * - The ESPHome native API client can transiently drop and reconnect (ping failures / wifi blips).
+ * - During that window, BLE operations throw fast with "Not connected" / "Not authorized" and our
+ *   connect attempts finish in ~0ms, causing command failures.
+ *
+ * Strategy:
+ * - Wait a short, bounded window for (connected && authorized) before attempting BLE requests.
+ * - If it doesn't recover quickly, fail fast so higher-level self-heal can reconnect cleanly.
+ */
+const awaitESPHomeReady = async (connection: Connection, timeoutMs: number): Promise<void> => {
+  const anyConn = connection as any;
+  if (anyConn?.connected && anyConn?.authorized) return;
+
+  await new Promise<void>((resolve, reject) => {
+    let timeout: NodeJS.Timeout | undefined;
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      try {
+        (connection as any).off?.('authorized', onAuthorized);
+        (connection as any).off?.('connected', onConnected);
+        (connection as any).off?.('error', onError);
+      } catch {}
+    };
+    const done = () => {
+      const c = (connection as any)?.connected;
+      const a = (connection as any)?.authorized;
+      if (c && a) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onAuthorized = () => done();
+    const onConnected = () => done();
+    const onError = (e: any) => {
+      cleanup();
+      reject(e);
+    };
+
+    try {
+      (connection as any).on?.('authorized', onAuthorized);
+      (connection as any).on?.('connected', onConnected);
+      (connection as any).on?.('error', onError);
+    } catch {}
+
+    timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`ESPHome API not ready after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    // Check once immediately after attaching listeners.
+    done();
+  });
+};
+
 type ConnectPreference = {
   // Prefer CONNECT_V3_WITHOUT_CACHE
   withoutCache?: boolean;
@@ -252,6 +309,14 @@ export class BLEDevice implements IBLEDevice {
     const connectPromise = (async () => {
       const connectStartedAt = Date.now();
       try {
+        // If the ESPHome API client is in the middle of an internal reconnect, wait briefly so
+        // we don't fail instantly with "Not connected" / "Not authorized" and drop commands.
+        await awaitESPHomeReady(this.connection, 5_000).catch((e: any) => {
+          // Surface a clearer error message for diagnostics/self-heal.
+          const msg = e?.message || String(e);
+          throw new Error(`ESPHome API not ready: ${msg}`);
+        });
+
         ensurePrefsLoaded();
         const advAddressType = this.advertisement.addressType;
         const pref = connectPrefsByDeviceKey.get(this.deviceKey) ?? {};
