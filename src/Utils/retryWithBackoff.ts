@@ -91,10 +91,17 @@ export const isSocketOrBLETimeoutError = (error: any): boolean => {
     errorCode === 'ECONNRESET' ||
     errorCode === 'ECONNREFUSED' ||
     errorCode === 'ETIMEDOUT' ||
+    errorCode === 'EHOSTUNREACH' ||
+    errorCode === 'ENETUNREACH' ||
     errorMessage.includes('ECONNRESET') ||
     lower.includes('socket') ||
     lower.includes('reset') ||
     lower.includes('timeout') ||
+    lower.includes('ehostunreach') ||
+    lower.includes('enetunreach') ||
+    lower.includes('hostunreach') ||
+    lower.includes('network unreachable') ||
+    lower.includes('host unreachable') ||
     // ESPHome BLE proxy / ESP-IDF failure patterns
     lower.includes('status=133') ||
     lower.includes('reason=0x100') ||

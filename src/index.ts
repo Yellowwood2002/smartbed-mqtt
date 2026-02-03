@@ -155,6 +155,8 @@ const runWithSelfHealing = async (
       const isSocketError = errorCode === 'ECONNRESET' || 
                            errorCode === 'ECONNREFUSED' || 
                            errorCode === 'ETIMEDOUT' ||
+                           errorCode === 'EHOSTUNREACH' ||
+                           errorCode === 'ENETUNREACH' ||
                            errorMessage.includes('ECONNRESET') ||
                            errorMessage.includes('socket') ||
                            errorMessage.includes('reset') ||
@@ -302,6 +304,8 @@ const start = async () => {
       const isSocketError = errorCode === 'ECONNRESET' || 
                            errorCode === 'ECONNREFUSED' || 
                            errorCode === 'ETIMEDOUT' ||
+                           errorCode === 'EHOSTUNREACH' ||
+                           errorCode === 'ENETUNREACH' ||
                            errorMessage.includes('ECONNRESET') ||
                            errorMessage.includes('socket') ||
                            errorMessage.includes('reset') ||
