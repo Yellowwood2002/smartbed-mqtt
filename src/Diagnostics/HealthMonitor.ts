@@ -47,6 +47,11 @@ class HealthMonitor {
   private lastCommandName?: string;
   
   private proxyStatus = new Map<string, any>();
+  private proxyRebootCooldownUntilByHost = new Map<string, number>();
+
+  // Safety: don't hammer a relay/proxy reboot repeatedly if the scanner is wedged.
+  // Keep this fairly long; the proxy needs time to fully reboot and start scanning again.
+  private readonly proxyRebootCooldownMs = 10 * 60_000; // 10 minutes
 
   // If we see repeated retryable BLE/socket errors, request a reconnect.
   private readonly bleFailureTripCount = 3;
@@ -191,8 +196,34 @@ class HealthMonitor {
 
   requestProxyReboot(proxyHost: string) {
     if (!this.mqtt) return;
+    const now = Date.now();
+    const cooldownUntil = this.proxyRebootCooldownUntilByHost.get(proxyHost) ?? 0;
+    if (cooldownUntil > now) {
+      const remainingSec = Math.ceil((cooldownUntil - now) / 1000);
+      logWarn(`[Health] Proxy reboot suppressed by cooldown for ${proxyHost} (retry in ~${remainingSec}s)`);
+      // Breadcrumb topic (safe namespace) so HA can display that we *wanted* to reboot.
+      try {
+        this.mqtt.publish(`smartbedmqtt/proxy/${proxyHost}/reboot_suppressed`, {
+          ts: getUnixEpoch(),
+          host: proxyHost,
+          cooldownRemainingSec: remainingSec,
+        });
+      } catch {}
+      return;
+    }
+
     const topic = `smartbed-mqtt/proxy/${proxyHost}/command`;
     this.mqtt.publish(topic, 'REBOOT');
+    this.proxyRebootCooldownUntilByHost.set(proxyHost, now + this.proxyRebootCooldownMs);
+
+    // Breadcrumb (safe namespace) so you can prove the add-on requested the reboot.
+    // This does NOT affect other MQTT processes.
+    try {
+      this.mqtt.publish(`smartbedmqtt/proxy/${proxyHost}/reboot_requested`, {
+        ts: getUnixEpoch(),
+        host: proxyHost,
+      });
+    } catch {}
   }
 
   /**
