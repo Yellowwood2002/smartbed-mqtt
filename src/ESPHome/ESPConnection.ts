@@ -7,6 +7,7 @@ import { connect } from './connect';
 import { BLEAdvertisement } from './types/BLEAdvertisement';
 import { BLEDevice } from './types/BLEDevice';
 import { IBLEDevice } from './types/IBLEDevice';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 
 interface BLEProxy {
   host: string;
@@ -164,16 +165,46 @@ export class ESPConnection implements IESPConnection {
       this.connections.length > 0 &&
       advertisementsSeen === 0
     ) {
+      const attemptedHosts = this.connections.map((c) => c.host).filter(Boolean).join(', ') || 'unknown';
       const diag = Object.entries(advertisementsSeenByHost)
         .map(([host, count]) => `${host}=${count}`)
         .join(', ');
       logWarnDedup(
         `esphome:scanSilent:${searchKey}`,
         60_000,
-        `[ESPHome] Scan timed out with 0 advertisements seen. Reconnecting ESPHome proxy API and retrying once. (${diag || 'no hosts'})`
+        `[ESPHome] Scan timed out with 0 advertisements seen. Reconnecting ESPHome proxy API and retrying once. (hosts=${attemptedHosts}${diag ? `; seen=${diag}` : ''})`
       );
       await this.reconnect();
       return await this.getBLEDevicesInternal(originalDeviceNames, nameMapper, true);
+    }
+
+    // If we already tried reconnecting and STILL saw zero advertisements, this is almost never
+    // "bed not advertising" (you'd typically see *some* BLE traffic). Treat this as a proxy BLE
+    // scanner wedged state and escalate: request proxy reboot + restart SmartbedMQTT setup.
+    if (stopReason === 'timeout' && reconnectAttempted && this.connections.length > 0 && advertisementsSeen === 0) {
+      const hosts = this.connections.map((c) => c.host).filter(Boolean) as string[];
+      const key = `esphome:scanSilent:escalate:${searchKey}`;
+      logWarnDedup(
+        key,
+        60_000,
+        `[ESPHome] Scan still silent after reconnect (0 advertisements). Requesting proxy reboot + SmartbedMQTT reconnect. (hosts=${hosts.join(',') || 'unknown'})`
+      );
+      for (const h of hosts) {
+        try {
+          healthMonitor.requestProxyReboot(h);
+        } catch {}
+      }
+      try {
+        healthMonitor.requestRestart({
+          kind: 'ble',
+          reason: 'ESPHome scan silent after reconnect (forcing reconnect + proxy reboot)',
+          error: `hosts=${hosts.join(',') || 'unknown'}`,
+        });
+      } catch {}
+      // Also disconnect ASAP to free any stuck subscription.
+      try {
+        this.disconnect();
+      } catch {}
     }
 
     if (remaining.length) {

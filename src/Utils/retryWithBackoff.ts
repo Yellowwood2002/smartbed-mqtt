@@ -112,6 +112,8 @@ export const isSocketOrBLETimeoutError = (error: any): boolean => {
     lower.includes('not authorized') ||
     lower.includes('not connected') ||
     lower.includes('socket is not connected') ||
+    // Our guardrail when the API is reconnecting but not ready yet.
+    lower.includes('esphome api not ready') ||
     // Known message waits (older library wording)
     errorMessage.includes('BluetoothDeviceConnectionResponse') ||
     errorMessage.includes('BluetoothGATTGetServicesDoneResponse')

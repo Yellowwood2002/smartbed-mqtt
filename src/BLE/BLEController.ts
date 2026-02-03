@@ -117,6 +117,7 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
           msg.includes('not connected') ||
           msg.includes('not authorized') ||
           msg.includes('socket is not connected') ||
+          msg.includes('esphome api not ready') ||
           msg.includes('bad format') ||
           msg.includes('unknown protocol selected by server');
 
