@@ -187,6 +187,15 @@ export const connect = (connection: Connection) => {
           socket.on('error', socketErrorHandler);
           socket.on('close', () => {
             logWarn(`[ESPHome] Socket closed on ${connection.host}`);
+            // If the API socket closes unexpectedly, future BLE commands will fail with "Not connected".
+            // Proactively request a reconnect so the system self-heals faster (often before the next command).
+            try {
+              healthMonitor.requestRestart({
+                kind: 'ble',
+                reason: 'ESPHome socket closed (forcing reconnect)',
+                error: 'socket closed',
+              });
+            } catch {}
           });
         }
 

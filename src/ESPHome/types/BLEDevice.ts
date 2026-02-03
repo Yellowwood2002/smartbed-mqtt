@@ -458,6 +458,9 @@ export class BLEDevice implements IBLEDevice {
         }
 
         this.connected = true;
+        // If we previously set a cooldown due to a hard failure, clear it on a successful connect.
+        // This keeps diagnostics from showing stale cooldowns after recovery.
+        cooldownUntilByDeviceKey.delete(this.deviceKey);
         const connectDurationMs = Date.now() - connectStartedAt;
         if (connectDurationMs > 8000) {
           // Slow connect: force without-cache for a while going forward.

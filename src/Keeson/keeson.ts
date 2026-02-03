@@ -108,6 +108,8 @@ const recordControllerSuccess = (bedKey: string, controllerMac: string) => {
   stats.successes += 1;
   stats.consecutiveFailures = 0;
   stats.lastSuccessAt = Date.now();
+  // Clear stale error text on recovery so diagnostics aren't misleading.
+  stats.lastError = undefined;
   // Pin this controller as the "sticky" winner until it fails consecutively.
   controllerPrefs[bedKey] = controllerPrefs[bedKey] || { controllers: {} };
   controllerPrefs[bedKey]._meta = controllerPrefs[bedKey]._meta || {};
