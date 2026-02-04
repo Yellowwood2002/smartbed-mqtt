@@ -220,47 +220,46 @@ const start = async () => {
   
   // bluetooth devices - these need self-healing with connection monitoring
   const RETRY_DELAY_MS = 5000; // 5 seconds
+
+  // CRITICAL: Keep MQTT stable across ESPHome/BLE reconnects.
+  // Recreating MQTT clients during self-healing can flap availability and make HA/HomeKit entities disappear.
+  const mqtt = await connectToMQTT();
+  healthMonitor.init(mqtt, type);
+  startProcessTelemetry(mqtt, type);
+
+  // HA Buttons (MQTT discovery)
+  // These show up as button entities in HA and directly trigger recovery actions.
+  const opsDeviceData = buildMQTTDeviceData(
+    { friendlyName: 'SmartbedMQTT', name: `addon:${type}`, address: 'smartbedmqtt', ids: ['smartbedmqtt', `smartbedmqtt:${type}`] },
+    'SmartbedMQTT'
+  );
+
+  // Soft reconnect: triggers the self-healing loop to reconnect ESPHome without a Supervisor restart.
+  new Button(mqtt, opsDeviceData, { description: 'Reconnect BLE (soft)', category: 'diagnostic', icon: 'mdi:refresh' }, async () => {
+    healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual reconnect (HA button)' });
+  });
+
+  // Hard restart: exits so Supervisor restarts the add-on.
+  new Button(mqtt, opsDeviceData, { description: 'Restart add-on (Supervisor)', category: 'diagnostic', icon: 'mdi:restart' }, async () => {
+    healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual supervisor restart (HA button)' });
+    setTimeout(() => processExit(1), 750);
+  });
+
+  // Request proxy power-cycle (handled by HA automation listening to smartbed-mqtt/proxy/<host>/command).
+  const proxies = (getRootOptions()?.bleProxies ?? []) as Array<any>;
+  const proxyHosts = proxies.map((p) => p?.host).filter(Boolean);
+  new Button(mqtt, opsDeviceData, { description: 'Reboot BLE Proxy (relay)', category: 'diagnostic', icon: 'mdi:power-cycle' }, async () => {
+    for (const host of proxyHosts.length ? proxyHosts : ['10.0.0.69']) {
+      mqtt.publish(`smartbed-mqtt/proxy/${host}/command`, 'REBOOT');
+    }
+  });
+
   while (true) {
-    let mqtt: any = null;
     let esphome: any = null;
-    let stopTelemetry: (() => void) | null = null;
-    
     try {
-      // Reconnect MQTT if needed (self-healing)
-      mqtt = await connectToMQTT();
-      healthMonitor.init(mqtt, type);
-      stopTelemetry = startProcessTelemetry(mqtt, type);
-
-      // HA Buttons (MQTT discovery)
-      // These show up as button entities in HA and directly trigger recovery actions.
-      const opsDeviceData = buildMQTTDeviceData(
-        { friendlyName: 'SmartbedMQTT', name: `addon:${type}`, address: 'smartbedmqtt', ids: ['smartbedmqtt', `smartbedmqtt:${type}`] },
-        'SmartbedMQTT'
-      );
-
-      // Soft reconnect: triggers the self-healing loop to reconnect ESPHome/MQTT without a Supervisor restart.
-      new Button(mqtt, opsDeviceData, { description: 'Reconnect BLE (soft)', category: 'diagnostic', icon: 'mdi:refresh' }, async () => {
-        healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual reconnect (HA button)' });
-      });
-
-      // Hard restart: exits so Supervisor restarts the add-on.
-      new Button(mqtt, opsDeviceData, { description: 'Restart add-on (Supervisor)', category: 'diagnostic', icon: 'mdi:restart' }, async () => {
-        healthMonitor.requestRestart({ kind: 'manual', reason: 'Manual supervisor restart (HA button)' });
-        setTimeout(() => processExit(1), 750);
-      });
-
-      // Request proxy power-cycle (handled by HA automation listening to smartbed-mqtt/proxy/<host>/command).
-      const proxies = (getRootOptions()?.bleProxies ?? []) as Array<any>;
-      const proxyHosts = proxies.map((p) => p?.host).filter(Boolean);
-      new Button(mqtt, opsDeviceData, { description: 'Reboot BLE Proxy (relay)', category: 'diagnostic', icon: 'mdi:power-cycle' }, async () => {
-        for (const host of proxyHosts.length ? proxyHosts : ['10.0.0.69']) {
-          mqtt.publish(`smartbed-mqtt/proxy/${host}/command`, 'REBOOT');
-        }
-      });
-      
       // Reconnect ESPHome if needed (self-healing)
       esphome = await connectToESPHome();
-      
+
       // Run device function with self-healing wrapper
       switch (type) {
         case 'richmat':
@@ -296,25 +295,26 @@ const start = async () => {
           return;
       }
     } catch (error: any) {
-      try {
-        stopTelemetry?.();
-      } catch {}
       const errorMessage = error?.message || String(error);
       const errorCode = error?.code || '';
-      const isSocketError = errorCode === 'ECONNRESET' || 
-                           errorCode === 'ECONNREFUSED' || 
-                           errorCode === 'ETIMEDOUT' ||
-                           errorCode === 'EHOSTUNREACH' ||
-                           errorCode === 'ENETUNREACH' ||
-                           errorMessage.includes('ECONNRESET') ||
-                           errorMessage.includes('socket') ||
-                           errorMessage.includes('reset') ||
-                           errorMessage.includes('timeout') ||
-                           errorMessage.includes('BluetoothDeviceConnectionResponse') ||
-                           errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
-      
+      const isSocketError =
+        errorCode === 'ECONNRESET' ||
+        errorCode === 'ECONNREFUSED' ||
+        errorCode === 'ETIMEDOUT' ||
+        errorCode === 'EHOSTUNREACH' ||
+        errorCode === 'ENETUNREACH' ||
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('socket') ||
+        errorMessage.includes('reset') ||
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('BluetoothDeviceConnectionResponse') ||
+        errorMessage.includes('BluetoothGATTGetServicesDoneResponse');
+
       if (isSocketError) {
-        logWarn(`[Main] Socket/BLE error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorCode || errorMessage);
+        logWarn(
+          `[Main] Socket/BLE error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`,
+          errorCode || errorMessage
+        );
       } else {
         logWarn(`[Main] Error during setup in ${type} (will retry in ${RETRY_DELAY_MS / 1000}s):`, errorMessage);
       }
@@ -323,9 +323,9 @@ const start = async () => {
       try {
         esphome?.disconnect?.();
       } catch {}
-      
+
       await wait(RETRY_DELAY_MS);
-      // Loop will retry
+      // Loop will retry ESPHome only (MQTT remains stable)
     }
   }
 };

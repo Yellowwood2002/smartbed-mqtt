@@ -1,4 +1,13 @@
 export interface IMQTTConnection {
+  /**
+   * Disconnect the underlying MQTT client.
+   *
+   * Why:
+   * - During self-healing loops we may create a new MQTT client.
+   * - If the old client is left running, it can publish retained `offline` status later and
+   *   make all entities unavailable in HA/HomeKit even though a new client is connected.
+   */
+  disconnect(): void;
   unsubscribe(topic: string): void;
   on(event: string, listener: (this: IMQTTConnection, message: string) => void): this;
   off(event: string, listener: (this: IMQTTConnection, message: string) => void): this;

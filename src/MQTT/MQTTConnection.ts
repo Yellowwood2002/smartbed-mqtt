@@ -18,8 +18,6 @@ export class MQTTConnection extends EventEmitter implements IMQTTConnection {
       logInfo('[MQTT] Reconnecting...');
     });
 
-    client.on('disconnect', client.removeAllListeners);
-
     client.on('error', (error) => {
       logError('[MQTT] Error', error);
     });
@@ -28,6 +26,28 @@ export class MQTTConnection extends EventEmitter implements IMQTTConnection {
       this.emit(topic, message.toString());
     });
     this.setMaxListeners(0);
+  }
+
+  /**
+   * Hard-stop the underlying MQTT client so it can't linger and publish later.
+   *
+   * IMPORTANT:
+   * - We intentionally do NOT publish `smartbedmqtt/status=offline` here.
+   * - That topic is an availability signal for HA/HomeKit; flapping it during self-heal loops can
+   *   make entities disappear even though the add-on is still running.
+   * - The MQTT Last Will covers true crashes/ungraceful exits.
+   */
+  disconnect(): void {
+    try {
+      // Force-close immediately (don't wait for inflight acks).
+      this.client.end(true);
+    } catch {}
+    try {
+      this.client.removeAllListeners();
+    } catch {}
+    try {
+      this.removeAllListeners();
+    } catch {}
   }
 
   publish(topic: string, message: any, options?: { qos?: 0 | 1 | 2; retain?: boolean }) {

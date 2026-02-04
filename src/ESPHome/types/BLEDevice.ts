@@ -311,7 +311,9 @@ export class BLEDevice implements IBLEDevice {
       try {
         // If the ESPHome API client is in the middle of an internal reconnect, wait briefly so
         // we don't fail instantly with "Not connected" / "Not authorized" and drop commands.
-        await awaitESPHomeReady(this.connection, 5_000).catch((e: any) => {
+        // Wait a bit longer than the library's reconnect interval (we configure 5s),
+        // so a brief wifi blip doesn't instantly fail the user command.
+        await awaitESPHomeReady(this.connection, 12_000).catch((e: any) => {
           // Surface a clearer error message for diagnostics/self-heal.
           const msg = e?.message || String(e);
           throw new Error(`ESPHome API not ready: ${msg}`);

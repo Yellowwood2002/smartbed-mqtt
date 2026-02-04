@@ -152,6 +152,10 @@ class HealthMonitor {
   recordBleFailure(deviceName: string, error: any, proxyHost?: string) {
     const message = error?.message || String(error);
     const retryable = isSocketOrBLETimeoutError(error);
+    const lower = String(message).toLowerCase();
+    const isApiNotReady = lower.includes('esphome api not ready');
+
+    const prevError = this.lastBleError;
 
     this.lastBleError = {
       at: Date.now(),
@@ -161,16 +165,29 @@ class HealthMonitor {
     };
 
     if (retryable) {
-      this.consecutiveBleFailures += 1;
+      // Deduplicate bursts: a single user action can trigger multiple concurrent writes,
+      // which may surface the same transient error 2-3 times in the same millisecond.
+      // Count that as ONE failure so we don't instantly escalate.
+      const prevAt = prevError?.at ?? 0;
+      const prevMsg = String(prevError?.message ?? '');
+      const isBurstDup = prevMsg === message && Date.now() - prevAt < 1500;
+      if (!isBurstDup) this.consecutiveBleFailures += 1;
       if (this.consecutiveBleFailures >= this.bleFailureTripCount) {
         if (proxyHost) {
-          logWarn(`[Health] Requesting reboot of proxy ${proxyHost} due to repeated BLE failures.`);
-          this.requestProxyReboot(proxyHost);
-          // Also force a SmartbedMQTT reconnect so we drop/recreate the ESPHome API session.
-          // Otherwise we can stay wedged even after the proxy power-cycle.
+          if (!isApiNotReady) {
+            logWarn(`[Health] Requesting reboot of proxy ${proxyHost} due to repeated BLE failures.`);
+            this.requestProxyReboot(proxyHost);
+          } else {
+            // "API not ready" is typically a transient socket reconnect window between the add-on and proxy.
+            // Rebooting the proxy is rarely helpful and creates more disruption; instead, reconnect SmartbedMQTT.
+            logWarn(`[Health] ESPHome API not ready repeatedly; requesting SmartbedMQTT reconnect (no proxy reboot).`);
+          }
+          // Force a SmartbedMQTT reconnect so we drop/recreate the ESPHome API session.
           this.requestRestart({
             kind: 'ble',
-            reason: `Proxy reboot requested after repeated BLE/socket failures (${this.consecutiveBleFailures})`,
+            reason: isApiNotReady
+              ? `ESPHome API not ready repeatedly (${this.consecutiveBleFailures})`
+              : `Proxy reboot requested after repeated BLE/socket failures (${this.consecutiveBleFailures})`,
             deviceName,
             error: message,
           });

@@ -6,6 +6,7 @@ import { IESPConnection } from './IESPConnection';
 import { connect } from './connect';
 import { getProxies } from './options';
 import EventEmitter from 'events';
+import { healthMonitor } from 'Diagnostics/HealthMonitor';
 
 const isServerNameMismatch = (error: any) => {
   const msg = error?.message || String(error);
@@ -69,7 +70,18 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
           failedConnection = null;
         }
         
-        const newConnection = new Connection({ ...config, expectedServerName });
+        // IMPORTANT:
+        // The underlying library defaults to reconnectInterval=30s.
+        // If the socket drops briefly (wifi blip), BLE commands can fail with "ESPHome API not ready"
+        // for up to 30s even though a fast reconnect would succeed.
+        //
+        // We shorten reconnectInterval so transient drops heal quickly without requiring a full add-on restart.
+        const newConnection = new Connection({
+          ...config,
+          expectedServerName,
+          reconnect: true,
+          reconnectInterval: 5_000,
+        } as any);
         try {
           // connect() will throw on failure, triggering retry
           return await connect(newConnection);
@@ -118,6 +130,29 @@ export const connectToESPHome = async (): Promise<IESPConnection> => {
               delayMs / 1000
             }s: ${errorCode || errorMessage}`
           );
+
+          // If the proxy is unreachable at the network layer for a sustained period, request a proxy reboot.
+          // This is safe:
+          // - It's rate-limited inside HealthMonitor (10 min cooldown per host).
+          // - It only publishes to the `smartbed-mqtt/proxy/<host>/command` topic your existing HA automation listens to.
+          //
+          // Note: If the IP changed (DHCP), rebooting won't fix it — but in the common case (proxy wedged/offline),
+          // this shortens recovery time without touching any other MQTT processes.
+          const netDown =
+            errorCode === 'EHOSTUNREACH' ||
+            errorCode === 'ENETUNREACH' ||
+            errorCode === 'ECONNREFUSED' ||
+            errorCode === 'ETIMEDOUT';
+          if (netDown && attempt >= 5) {
+            logWarnDedup(
+              `esphome:proxyUnreachable:${config.host}:${config.port || 6053}`,
+              60_000,
+              `[ESPHome] Proxy ${config.host}:${config.port || 6053} unreachable (${errorCode}). Requesting proxy reboot (rate-limited).`
+            );
+            try {
+              healthMonitor.requestProxyReboot(config.host);
+            } catch {}
+          }
         },
       }
     );

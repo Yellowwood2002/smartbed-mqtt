@@ -14,7 +14,7 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
    * crashes produce an 'offline' state without relying on graceful shutdown.
    */
   const STATUS_TOPIC = 'smartbedmqtt/status';
-  
+
   // Try connecting with the configured host first
   const tryConnect = (config: typeof MQTTConfig): Promise<IMQTTConnection> => {
     return new Promise((resolve, reject) => {
@@ -30,48 +30,39 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
           retain: true,
         },
       } as any); // Type assertion needed because config may have string port/username/password from env
-      
-      const cleanup = () => {
-        client.removeAllListeners();
-      };
-      
-      client.once('connect', () => {
-        cleanup();
-        logInfo('[MQTT] Connected');
 
-        // Publish retained online marker now that we're connected.
+      // Wrap early so we never miss the initial connect event.
+      const connection = new MQTTConnection(client);
+
+      const publishOnline = () => {
         try {
-          client.publish(STATUS_TOPIC, 'online', { qos: 1, retain: true });
+          connection.publish(STATUS_TOPIC, 'online', { qos: 1, retain: true });
         } catch (e: any) {
           logWarn('[MQTT] Failed to publish online status:', e?.message || String(e));
         }
-        
-        // Set up reconnection monitoring
-        client.on('close', () => {
-          logWarn('[MQTT] Connection closed, will attempt to reconnect...');
-          // If this is a graceful close, publish offline. Last Will covers ungraceful exits.
-          try {
-            client.publish(STATUS_TOPIC, 'offline', { qos: 1, retain: true });
-          } catch {}
-        });
-        
-        client.on('offline', () => {
-          logWarn('[MQTT] Client went offline, will attempt to reconnect...');
-          try {
-            client.publish(STATUS_TOPIC, 'offline', { qos: 1, retain: true });
-          } catch {}
-        });
-        
-        client.on('error', (error: any) => {
-          const errorMessage = error?.message || String(error);
-          logError('[MQTT] Connection error (client will attempt to reconnect):', errorMessage);
-        });
-        
-        resolve(new MQTTConnection(client));
+      };
+
+      // Publish online on EVERY MQTT (re)connect.
+      client.on('connect', publishOnline);
+
+      // Log reconnect transitions, but do NOT publish offline during transient reconnects.
+      // Rationale:
+      // - Publishing `offline` while the add-on is alive causes HA/HomeKit entities to go unavailable.
+      // - The MQTT Last Will is the authoritative "addon died" signal.
+      client.on('offline', () => logWarn('[MQTT] Client went offline (auto-reconnect enabled).'));
+      client.on('close', () => logWarn('[MQTT] Connection closed (auto-reconnect enabled).'));
+      client.on('error', (error: any) => {
+        const errorMessage = error?.message || String(error);
+        logError(`[MQTT] Connection error (auto-reconnect enabled): ${errorMessage}`);
       });
-      
+
+      client.once('connect', () => {
+        logInfo('[MQTT] Connected');
+        // publishOnline will run via the persistent handler above.
+        resolve(connection);
+      });
+
       client.once('error', (error: any) => {
-        cleanup();
         const errorMessage = error?.message || String(error);
         const errorCode = error?.code || '';
         
@@ -86,6 +77,10 @@ export const connectToMQTT = (): Promise<IMQTTConnection> => {
           logWarn(`[MQTT] DNS resolution failed for ${config.host}, falling back to IP 172.30.32.1`);
           // Fallback to IP address
           const fallbackConfig = { ...config, host: '172.30.32.1' };
+          try {
+            // Stop this client so it can't linger and publish later.
+            connection.disconnect();
+          } catch {}
           tryConnect(fallbackConfig).then(resolve).catch(reject);
         } else {
           logError('[MQTT] Connect Error', error);
