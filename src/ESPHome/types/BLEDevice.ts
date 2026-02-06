@@ -41,53 +41,82 @@ const formatMacForProxyLog = (mac12hex: string) =>
  *   connect attempts finish in ~0ms, causing command failures.
  *
  * Strategy:
- * - Wait a short, bounded window for (connected && authorized) before attempting BLE requests.
+ * - Prefer a *real API probe* (`deviceInfoService`) because we have seen cases where the library
+ *   continues streaming messages but the `authorized` flag briefly lags / doesn't re-emit events.
+ * - Fall back to polling (connected && authorized) in a short, bounded window.
  * - If it doesn't recover quickly, fail fast so higher-level self-heal can reconnect cleanly.
  */
 const awaitESPHomeReady = async (connection: Connection, timeoutMs: number): Promise<void> => {
   const anyConn = connection as any;
   if (anyConn?.connected && anyConn?.authorized) return;
 
-  await new Promise<void>((resolve, reject) => {
-    let timeout: NodeJS.Timeout | undefined;
-    const cleanup = () => {
-      if (timeout) clearTimeout(timeout);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastProbeError: string | undefined;
+
+  const probeOnce = async () => {
+    // Avoid hanging the whole command if the API is wedged.
+    const PROBE_TIMEOUT_MS = 1500;
+    await Promise.race([
+      connection.deviceInfoService().then(() => undefined),
+      sleep(PROBE_TIMEOUT_MS).then(() => {
+        throw new Error(`probe timeout after ${PROBE_TIMEOUT_MS}ms`);
+      }),
+    ]);
+  };
+
+  // First, try a real API call. If it works, we're effectively "ready" even if flags are stale.
+  try {
+    await probeOnce();
+    return;
+  } catch (e: any) {
+    lastProbeError = e?.message || String(e);
+  }
+
+  // Poll in short intervals until either:
+  // - flags report ready, or
+  // - the API probe succeeds, or
+  // - we hit the deadline.
+  let nextProbeAt = Date.now() + 800;
+  while (Date.now() < deadline) {
+    const c = (connection as any)?.connected;
+    const a = (connection as any)?.authorized;
+    if (c && a) return;
+
+    if (Date.now() >= nextProbeAt) {
+      nextProbeAt = Date.now() + 1200;
       try {
-        (connection as any).off?.('authorized', onAuthorized);
-        (connection as any).off?.('connected', onConnected);
-        (connection as any).off?.('error', onError);
-      } catch {}
-    };
-    const done = () => {
-      const c = (connection as any)?.connected;
-      const a = (connection as any)?.authorized;
-      if (c && a) {
-        cleanup();
-        resolve();
+        await probeOnce();
+        return;
+      } catch (e: any) {
+        lastProbeError = e?.message || String(e);
       }
-    };
-    const onAuthorized = () => done();
-    const onConnected = () => done();
-    const onError = (e: any) => {
-      cleanup();
-      reject(e);
-    };
+    }
 
-    try {
-      (connection as any).on?.('authorized', onAuthorized);
-      (connection as any).on?.('connected', onConnected);
-      (connection as any).on?.('error', onError);
-    } catch {}
+    await sleep(200);
+  }
 
-    timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`ESPHome API not ready after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    // Check once immediately after attaching listeners.
-    done();
-  });
+  const c = (connection as any)?.connected;
+  const a = (connection as any)?.authorized;
+  const host = (connection as any)?.host;
+  throw new Error(
+    `ESPHome API not ready after ${timeoutMs}ms (host=${String(host ?? 'unknown')} connected=${String(
+      c
+    )} authorized=${String(a)} lastProbeError=${lastProbeError ?? 'n/a'})`
+  );
 };
+
+/**
+ * How long we wait for ESPHome native API to become usable before we give up.
+ *
+ * Real-world behavior:
+ * - The socket can drop briefly (wifi blip / proxy busy) and the library reconnects.
+ * - During that window, BLE commands fail with "ESPHome API not ready ...".
+ *
+ * We keep this bounded so HA buttons don't hang forever. The proactive fix here is the
+ * readiness probe/polling logic above (so we don't falsely time out when flags/events are stale).
+ */
+const ESPHOME_READY_TIMEOUT_MS = 12_000;
 
 type ConnectPreference = {
   // Prefer CONNECT_V3_WITHOUT_CACHE
@@ -313,7 +342,7 @@ export class BLEDevice implements IBLEDevice {
         // we don't fail instantly with "Not connected" / "Not authorized" and drop commands.
         // Wait a bit longer than the library's reconnect interval (we configure 5s),
         // so a brief wifi blip doesn't instantly fail the user command.
-        await awaitESPHomeReady(this.connection, 12_000).catch((e: any) => {
+        await awaitESPHomeReady(this.connection, ESPHOME_READY_TIMEOUT_MS).catch((e: any) => {
           // Surface a clearer error message for diagnostics/self-heal.
           const msg = e?.message || String(e);
           throw new Error(`ESPHome API not ready: ${msg}`);

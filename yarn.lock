@@ -3164,7 +3164,7 @@ parse-json@^5.0.0, parse-json@^5.2.0:
     json-parse-even-better-errors "^2.3.0"
     lines-and-columns "^1.1.6"
 
-patch-package@^8.0.1:
+patch-package@^8.0.0:
   version "8.0.1"
   resolved "https://registry.npmjs.org/patch-package/-/patch-package-8.0.1.tgz"
   integrity sha512-VsKRIA8f5uqHQ7NGhwIna6Bx6D9s/1iXlA1hthBVBEbkq+t4kXD0HHt+rJhf/Z+Ci0F/HCB2hvn0qLdLG+Qxlw==
