@@ -11,6 +11,19 @@ const OFFLINE = 'offline';
 type ComponentType = 'button' | 'cover' | EntityWithStateComponentType;
 
 export type EntityConfig = {
+  /**
+   * Stable entity tag / object id.
+   *
+   * Why:
+   * - Historically we used `description` to derive the entity tag + unique_id.
+   * - Renaming labels (e.g. "Preset: Memory 1" -> "Preset: Yellow") created *new* entities and made
+   *   HA/HomeKit look like buttons were missing or duplicated.
+   *
+   * How:
+   * - If provided, this value (after `safeId`) is used for base topic + unique_id stability.
+   * - The user-facing name remains `description`.
+   */
+  tag?: string;
   description: string;
   category?: string;
   icon?: string;
@@ -28,7 +41,7 @@ export class Entity implements IAvailable {
     protected entityConfig: EntityConfig,
     private componentType: ComponentType
   ) {
-    this.entityTag = safeId(entityConfig.description);
+    this.entityTag = safeId(entityConfig.tag ?? entityConfig.description);
     this.uniqueId = `${safeId(deviceData.device.name)}_${this.entityTag}`;
     this.baseTopic = `${deviceData.deviceTopic}/${this.entityTag}`;
     /**

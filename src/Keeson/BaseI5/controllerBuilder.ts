@@ -29,7 +29,7 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
   );
   const notifyHandles = notifyCharacteristic && { notify: notifyCharacteristic.handle };
 
-  return new BLEController(
+  const controller = new BLEController(
     deviceData,
     bleDevice,
     writeCharacteristic.handle,
@@ -38,4 +38,7 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
     stayConnected,
     (bleDevice as BLEDevice).host
   );
+  // Used by preset labeling logic (auto remote layout per model).
+  (controller.cache as any).__keesonModel = 'base-i5';
+  return controller;
 };

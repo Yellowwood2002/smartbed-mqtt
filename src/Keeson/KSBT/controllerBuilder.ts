@@ -15,7 +15,7 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
   );
   if (!characteristic) return undefined;
 
-  return new BLEController(
+  const controller = new BLEController(
     deviceData,
     bleDevice,
     characteristic.handle,
@@ -24,4 +24,7 @@ export const controllerBuilder = async (deviceData: IDeviceData, bleDevice: IBLE
     stayConnected,
     (bleDevice as BLEDevice).host
   );
+  // Used by preset labeling logic (auto remote layout per model).
+  (controller.cache as any).__keesonModel = 'ksbt';
+  return controller;
 };
