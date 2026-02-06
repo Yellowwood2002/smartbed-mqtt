@@ -8,7 +8,7 @@ import { IController } from '../Common/IController';
 import { IEventSource } from '../Common/IEventSource';
 import { arrayEquals } from '@utils/arrayEquals';
 import { deepArrayEquals } from '@utils/deepArrayEquals';
-import { logError, logInfo } from '@utils/logger';
+import { logError, logInfo, logWarn } from '@utils/logger';
 import { healthMonitor } from 'Diagnostics/HealthMonitor';
 import { isSocketOrBLETimeoutError } from '@utils/retryWithBackoff';
 import { wait } from '@utils/wait';
@@ -106,6 +106,50 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
         logError({ err: error }, `[BLE] Failed to connect to device ${this.deviceData.device.name}`);
         healthMonitor.recordBleFailure(this.deviceData.device.name, error, this.proxyHost);
 
+        // Special-case: ESPHome API reconnect window.
+        // During transient reconnects the underlying Connection may be temporarily "not connected/authorized".
+        // If we immediately force a full SmartbedMQTT reconnect here, we drop user commands (HA button presses)
+        // even though the socket would have recovered within a couple seconds.
+        const firstMsg = String(error?.message || error).toLowerCase();
+        const isApiReconnectingWindow =
+          firstMsg.includes('esphome api not ready') ||
+          firstMsg.includes('not connected') ||
+          firstMsg.includes('not authorized') ||
+          firstMsg.includes('socket is not connected');
+
+        if (isApiReconnectingWindow) {
+          logWarn(
+            `[BLE] ESPHome API not ready for ${this.deviceData.device.name}; waiting briefly and retrying connect (to avoid dropping command).`
+          );
+          // Bounded local retries: ~1s + 2s + 4s = 7s additional wait.
+          // If this doesn't recover, the normal escalation path below will request a reconnect.
+          let lastErr: any = error;
+          for (const delayMs of [1000, 2000, 4000]) {
+            await wait(delayMs);
+            try {
+              await this.ensureConnected();
+              logInfo(`[BLE] Connected to device ${this.deviceData.device.name} after ESPHome API recovery wait`);
+              return;
+            } catch (e: any) {
+              lastErr = e;
+              const msg = String(e?.message || e).toLowerCase();
+              // If the error changed into something else, break and handle it normally.
+              if (
+                !(
+                  msg.includes('esphome api not ready') ||
+                  msg.includes('not connected') ||
+                  msg.includes('not authorized') ||
+                  msg.includes('socket is not connected')
+                )
+              ) {
+                break;
+              }
+            }
+          }
+          // Continue into escalation logic with the latest error.
+          error = lastErr;
+        }
+
         // If the ESPHome API socket is broken (e.g. ECONNRESET / write-after-end), a local reconnect loop
         // is often not enough — we need to force the higher-level ESPHome reconnect.
         const code = error?.code || '';
@@ -114,10 +158,6 @@ export class BLEController<TCommand> extends EventEmitter implements IEventSourc
           code === 'ECONNRESET' ||
           code === 'ERR_STREAM_WRITE_AFTER_END' ||
           msg.includes('write after end') ||
-          msg.includes('not connected') ||
-          msg.includes('not authorized') ||
-          msg.includes('socket is not connected') ||
-          msg.includes('esphome api not ready') ||
           msg.includes('bad format') ||
           msg.includes('unknown protocol selected by server');
 
